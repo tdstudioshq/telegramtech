@@ -1,0 +1,8 @@
+# Railway / Nixpacks build config.
+#
+# The service runs with NODE_ENV=production (required at runtime). That makes pnpm
+# skip devDependencies at install time — but the build needs `tsc` (a devDependency).
+# Override the install phase to install with devDependencies for the build only; the
+# deploy still starts with `pnpm start` → `node dist/index.js` under NODE_ENV=production.
+[phases.install]
+cmds = ['NODE_ENV=development pnpm install --frozen-lockfile']
