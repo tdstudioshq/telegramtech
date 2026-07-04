@@ -1,6 +1,6 @@
 /**
  * Composition root: the only module that wires core, persistence, providers,
- * and the Telegram client together. M5 jobs are deliberately not started here.
+ * the Telegram client, and the M5 background job scheduler together.
  */
 import { MemoryCacheProvider } from './adapters/cache/memory-cache.provider.js';
 import { NoopCacheProvider } from './adapters/cache/noop-cache.provider.js';
@@ -17,6 +17,7 @@ import {
 } from './adapters/telegram/bot.js';
 import { TelegramContentTransport } from './adapters/telegram/telegram-content-transport.js';
 import { TelegramNotifier } from './adapters/telegram/telegram-notifier.js';
+import { SUBSCRIPTION_SWEEP_BATCH, STALE_PAYMENT_BATCH } from './config/constants.js';
 import type { Env } from './config/env.js';
 import { DeliveryEngine } from './core/engines/delivery.engine.js';
 import { NotificationEngine } from './core/engines/notification.engine.js';
@@ -39,6 +40,11 @@ import { DropService } from './core/services/drop.service.js';
 import { PurchaseService } from './core/services/purchase.service.js';
 import { SubscriptionService } from './core/services/subscription.service.js';
 import { UserService } from './core/services/user.service.js';
+import { createAnalyticsJob } from './jobs/analytics.job.js';
+import { createCleanupJob } from './jobs/cleanup.job.js';
+import { createNotificationJob } from './jobs/notification.job.js';
+import { createSubscriptionExpirationJob } from './jobs/subscription-expiration.job.js';
+import { Scheduler } from './jobs/scheduler.js';
 import type { Logger } from './logging/logger.js';
 
 export interface Application {
@@ -89,6 +95,8 @@ export const createApplication = (env: Env, logger: Logger): Application => {
 
   registerEventHandlers(dispatcher, uow, audit, notifications);
 
+  const scheduler = buildScheduler(env, logger, cache, subscriptions, notifications, purchases);
+
   const botConfig: TelegramBotConfig = {
     token: env.BOT_TOKEN,
     mode: env.BOT_MODE,
@@ -116,9 +124,14 @@ export const createApplication = (env: Env, logger: Logger): Application => {
     async start(): Promise<void> {
       started = true;
       try {
+        // Arm the job timers first: in polling mode launchTelegramBot blocks until
+        // the bot stops, so anything after it would never run. The scheduler start
+        // is non-blocking and the jobs don't depend on the bot being launched.
+        scheduler.start();
         await launchTelegramBot(bot, botConfig);
       } catch (error) {
         started = false;
+        await scheduler.stop();
         throw error;
       }
     },
@@ -127,9 +140,49 @@ export const createApplication = (env: Env, logger: Logger): Application => {
         bot.stop(reason);
         started = false;
       }
+      // stop the scheduler (awaiting in-flight runs) before closing the pool so no
+      // job transaction is severed mid-flight.
+      await scheduler.stop();
       await database.close();
     },
   };
+};
+
+const MINUTE_MS = 60_000;
+
+/** Wires the M5 scheduler: intervals from config, batch sizes from constants (§11). */
+const buildScheduler = (
+  env: Env,
+  logger: Logger,
+  cache: CacheProvider,
+  subscriptions: SubscriptionService,
+  notifications: NotificationEngine,
+  purchases: PurchaseService,
+): Scheduler => {
+  const scheduler = new Scheduler(cache, logger.child({ module: 'jobs' }));
+  scheduler.register(
+    createSubscriptionExpirationJob(subscriptions, {
+      intervalMs: env.JOB_SUBSCRIPTION_SWEEP_INTERVAL * MINUTE_MS,
+      lockTtlSeconds: env.JOB_SUBSCRIPTION_SWEEP_INTERVAL * 60,
+      batchSize: SUBSCRIPTION_SWEEP_BATCH,
+    }),
+  );
+  scheduler.register(
+    createNotificationJob(notifications, {
+      intervalMs: env.JOB_NOTIFICATION_INTERVAL * MINUTE_MS,
+      lockTtlSeconds: env.JOB_NOTIFICATION_INTERVAL * 60,
+    }),
+  );
+  scheduler.register(
+    createCleanupJob(purchases, {
+      intervalMs: env.JOB_CLEANUP_INTERVAL * MINUTE_MS,
+      lockTtlSeconds: env.JOB_CLEANUP_INTERVAL * 60,
+      stalePendingMinutes: env.PENDING_PAYMENT_TTL_MINUTES,
+      batchSize: STALE_PAYMENT_BATCH,
+    }),
+  );
+  scheduler.register(createAnalyticsJob());
+  return scheduler;
 };
 
 const createCache = (env: Env, clock: Clock): CacheProvider => {

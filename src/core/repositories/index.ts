@@ -222,6 +222,14 @@ export interface PaymentRepository {
   markSucceeded(id: PaymentId, providerChargeId: string, rawPayload: unknown): Promise<Payment>;
   /** pending → failed; raw payload keeps the provider's failure detail. */
   markFailed(id: PaymentId, rawPayload: unknown): Promise<Payment>;
+  /** Cleanup-sweep input (M5): pending rows created before `olderThan`, oldest first, bounded batch. */
+  listStalePending(olderThan: Date, limit: number): Promise<Payment[]>;
+  /**
+   * Guarded pending → failed for the cleanup sweep: returns null if the row was no
+   * longer pending, so overlapping sweeps flip (and raise PaymentFailed for) each
+   * stale payment exactly once — correctness never depends on the job lock (§11).
+   */
+  markFailedIfPending(id: PaymentId, rawPayload: unknown): Promise<Payment | null>;
 }
 
 export interface PurchaseRepository {

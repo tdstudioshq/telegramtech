@@ -206,6 +206,73 @@ export class PurchaseService {
     return this.uow.run(async (repos) => repos.purchases.listByUser(userId));
   }
 
+  /**
+   * The stale-pending cleanup sweep (called by the M5 cleanup job). A crash
+   * between TX1 (pending pair) and TX2 (finalize) leaves a payment/purchase stuck
+   * in `pending`; this fails any pending pair older than `olderThanMinutes`,
+   * audits as `job`, and raises PaymentFailed so the user gets a retry prompt.
+   *
+   * Idempotent: markFailedIfPending's status guard makes overlapping sweeps flip
+   * (and notify for) each row exactly once — a resolved row is skipped, never
+   * double-failed. Safe to rerun repeatedly. Returns rows failed.
+   */
+  async failStalePending(
+    olderThanMinutes: number,
+    batchSize = 100,
+    correlationId?: string,
+  ): Promise<number> {
+    return this.uow.run(async (repos, events) => {
+      const cutoff = new Date(this.clock.now().getTime() - olderThanMinutes * 60_000);
+      const stale = await repos.payments.listStalePending(cutoff, batchSize);
+      let failed = 0;
+      for (const payment of stale) {
+        const purchase = await repos.purchases.findByPaymentId(payment.id);
+        if (purchase === null) {
+          // payments and purchases are created in the same transaction — a lone payment is a bug
+          throw new Error(`payment ${payment.id} has no purchase row`);
+        }
+        const rawPayload = { reason: 'stale_pending_timeout', failedBy: 'cleanup-job' };
+        const flipped = await repos.payments.markFailedIfPending(payment.id, rawPayload);
+        if (flipped === null) continue; // already resolved by a concurrent run — idempotent skip
+        await repos.purchases.markFailed(purchase.id);
+        failed += 1;
+        await this.audit.record(repos, {
+          creatorId: payment.creatorId,
+          action: 'payment.failed',
+          entityType: 'payment',
+          entityId: payment.id,
+          actorType: 'job',
+          correlationId,
+          context: {
+            amountStars: payment.amountStars,
+            provider: payment.provider,
+            reason: 'stale_pending_timeout',
+          },
+        });
+        await this.audit.record(repos, {
+          creatorId: purchase.creatorId,
+          action: 'purchase.failed',
+          entityType: 'purchase',
+          entityId: purchase.id,
+          actorType: 'job',
+          correlationId,
+          context: { reason: 'stale_pending_timeout' },
+        });
+        events.raise({
+          type: 'PaymentFailed',
+          paymentId: payment.id,
+          purchaseId: purchase.id,
+          userId: purchase.userId,
+          creatorId: purchase.creatorId,
+          amountStars: payment.amountStars,
+          reason: 'stale_pending_timeout',
+          occurredAt: this.clock.now(),
+        });
+      }
+      return failed;
+    });
+  }
+
   // ---- primitives shared with SubscriptionService (state transitions live here only) ----
 
   /** Resolve an idempotency key to its prior attempt, if any. */

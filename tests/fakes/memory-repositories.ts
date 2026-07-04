@@ -450,6 +450,22 @@ class MemoryPaymentRepository implements PaymentRepository {
     payment.updatedAt = this.store.clock.now();
     return payment;
   }
+
+  async listStalePending(olderThan: Date, limit: number): Promise<Payment[]> {
+    return this.store.state.payments
+      .filter((p) => p.status === 'pending' && p.createdAt.getTime() < olderThan.getTime())
+      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
+      .slice(0, limit);
+  }
+
+  async markFailedIfPending(id: PaymentId, rawPayload: unknown): Promise<Payment | null> {
+    const payment = this.store.state.payments.find((p) => p.id === id);
+    if (payment === undefined || payment.status !== 'pending') return null;
+    payment.status = 'failed';
+    payment.rawPayload = rawPayload;
+    payment.updatedAt = this.store.clock.now();
+    return payment;
+  }
 }
 
 class MemoryPurchaseRepository implements PurchaseRepository {

@@ -1,4 +1,4 @@
-/** Boot: config → composition root → Telegram client. M5 jobs are not started. */
+/** Boot: config → composition root → Telegram client + background job scheduler. */
 import { createApplication } from './app.js';
 import { APP_NAME } from './config/constants.js';
 import { loadEnv } from './config/env.js';

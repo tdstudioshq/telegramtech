@@ -2,7 +2,7 @@
  * Drizzle repository implementations (ADR-009) — the ONLY layer that touches
  * Drizzle. SQL in, domain types out; tenant filters per ADR-012.
  */
-import { and, asc, desc, eq, gt, isNull, lte, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, isNull, lt, lte, sql } from 'drizzle-orm';
 import type {
   AccessGrantRepository,
   AuditRepository,
@@ -329,6 +329,26 @@ export class DrizzlePaymentRepository implements PaymentRepository {
         .update(payments)
         .set({ status: 'failed', rawPayload, updatedAt: sql`now()` })
         .where(eq(payments.id, id))
+        .returning(),
+    );
+  }
+
+  async listStalePending(olderThan: Date, limit: number): Promise<Payment[]> {
+    return this.db
+      .select()
+      .from(payments)
+      .where(and(eq(payments.status, 'pending'), lt(payments.createdAt, olderThan)))
+      .orderBy(asc(payments.createdAt))
+      .limit(limit);
+  }
+
+  async markFailedIfPending(id: PaymentId, rawPayload: unknown): Promise<Payment | null> {
+    // status guard makes the sweep idempotent under overlap: a second flip is a no-op
+    return first(
+      await this.db
+        .update(payments)
+        .set({ status: 'failed', rawPayload, updatedAt: sql`now()` })
+        .where(and(eq(payments.id, id), eq(payments.status, 'pending')))
         .returning(),
     );
   }

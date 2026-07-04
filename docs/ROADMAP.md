@@ -31,9 +31,11 @@
 - [x] Unlock + subscribe callbacks · TelegramContentTransport (signed-URL upload, protect_content, tenant-scoped transport_cache write-back) · TelegramNotifier
 - [x] Composition root (`app.ts`) + boot/shutdown (`index.ts`) · 142 unit + 21 integration tests · typecheck/lint/build green
 
-### M5 — Jobs & lifecycle
-- [ ] scheduler.ts (intervals, cache locks, crash isolation, run metrics logs)
-- [ ] subscription-expiration.job · notification.job (drain + blocked-user handling → users.is_blocked) · cleanup.job (stale pending payments → failed; orphaned storage check) · analytics.job no-op registration
+### M5 — Jobs & lifecycle ✅ (Session 7, 2026-07-04)
+- [x] scheduler.ts (intervals, per-job cache lock, crash isolation, per-run correlation id, run metrics hook + structured logs, graceful start/stop awaiting in-flight)
+- [x] subscription-expiration.job · notification.job (drain + blocked-user handling → users.is_blocked) · cleanup.job (stale pending payments → failed via new PurchaseService.failStalePending) · analytics.job no-op registration
+- [x] Wired in app.ts (scheduler starts before the blocking bot.launch, stops before pool close); 161 unit + 25 integration tests · typecheck/lint/build green
+- [ ] Deferred (debt #13): cleanup.job orphaned-storage / transport_cache pruning — needs a ContentProvider list capability + expiry metadata (schema/port change, out of M5 scope)
 
 ### M6 — Hardening & deploy
 - [ ] Rate-limit tuning · error-message audit · manual QA checklist end-to-end (all three access types, payment failure path, expiry + renew)
@@ -57,6 +59,7 @@
 | 10 | CI runs unit tests only | Add test-DB workflow when repo settles (M2–M3) |
 | 11 | Single-creator UX in bot (core is multi-tenant) | SaaS onboarding milestone (deep-link storefront routing) |
 | 12 | Manual QA, no e2e bot tests | Post-MVP if regressions bite |
+| 13 | cleanup.job does not prune orphaned storage / stale transport_cache (log-only stub) | ContentProvider gains a bucket-list capability + assets carry cache expiry metadata (schema/port change) |
 
 ## Future integrations (not now)
 Real Telegram Stars provider (same port; pre_checkout + successful_payment + refund + 21-day payout awareness) · Creator web dashboard (workspace package sharing core; triggers RLS + settings hot-reload) · Lumina integration (client adapter on core services) · REST API · Stripe/fiat provider · R2/S3 content adapters · Redis · outbox events · analytics (job slot + PurchaseCompleted handler already reserved) · gifting/comps (manual grants already modeled).
