@@ -38,7 +38,7 @@
 6. Migrations only from approved schema, human-reviewed.
 
 ## File map (docs/)
-SYSTEM_ARCHITECTURE.md (authoritative; supersedes ARCHITECTURE.md) · DATABASE.md rev 2 (11 tables) · ARCHITECTURE_DECISIONS.md ADR-001..018 (supersedes DECISIONS.md) · SETUP.md rev 2 · ROADMAP.md rev 2 (M0–M6, 12 debts) · README.md · this file.
+SYSTEM_ARCHITECTURE.md (authoritative; supersedes ARCHITECTURE.md) · DATABASE.md rev 2.2 (12 physical tables) · ARCHITECTURE_DECISIONS.md ADR-001..019 (supersedes DECISIONS.md) · SETUP.md rev 2 · ROADMAP.md rev 2 (M0–M6, 12 debts) · README.md · this file.
 
 ## Session 3 plan (= M1, on approval) — DONE ✅
 1. ~~Scaffold: pnpm, strict tsconfig, ESLint boundary rules (import/no-restricted-paths mirroring the dependency graph), Prettier, Vitest.~~

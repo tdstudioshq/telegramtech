@@ -4,30 +4,33 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project state — read this first
 
-This is a **creator monetization platform** (working name: Telegram Stars SaaS / creator-platform). The core is a channel-agnostic business engine; Telegram (via Telegraf) is the first client adapter. **There is zero implementation code yet** — the repo contains only architecture documentation. All code work is blocked on a gate: Tyler must approve `docs/DATABASE.md` (schema rev 2) and `docs/SYSTEM_ARCHITECTURE.md` before Session 3 / milestone M1 begins.
+This is a **creator monetization platform** (working name: Telegram Stars SaaS / creator-platform). The core is a channel-agnostic business engine; Telegram (via Telegraf) is the first client adapter. **Milestones M1–M4 are complete and committed** (scaffold + schema/migration + persistence, core business layer, Telegram adapter). The next milestone is **M5 (jobs & lifecycle)** — do not start it without Tyler's go-ahead. `PurchaseService.failStalePending` is deliberately deferred to that milestone. The architecture docs are the frozen source of truth; the gate that once blocked M1 has been approved.
 
 At the start of every session, read `docs/PROJECT-MEMORY.md` (cross-session handoff — current state, locked decisions, next-session plan) and update it before ending a session. Decisions listed there as "locked" (Q1–Q5, ADR-006/007/010/011/012) must not be re-litigated.
 
-Document read order: `docs/SYSTEM_ARCHITECTURE.md` (authoritative) → `docs/DATABASE.md` → `docs/ARCHITECTURE_DECISIONS.md` (ADR-001…018) → `docs/SETUP.md` → `docs/ROADMAP.md` (M0–M6 milestones, debt register) → `docs/PROJECT-MEMORY.md`.
+Document read order: `docs/SYSTEM_ARCHITECTURE.md` (authoritative) → `docs/DATABASE.md` → `docs/ARCHITECTURE_DECISIONS.md` (ADR-001…019; ADR-019 = DeliveryEngine, not PurchaseService, emits `ContentUnlocked`, once per user+drop after actual delivery) → `docs/SETUP.md` → `docs/ROADMAP.md` (M0–M6 milestones, debt register) → `docs/PROJECT-MEMORY.md`.
 
 ## Stack
 
 TypeScript strict · Node 22 · pnpm · Telegraf (confined to the Telegram adapter) · Supabase Postgres + Storage · Drizzle ORM (`postgres-js`, pooler with `prepare:false`) · Zod · Pino · Vitest · ESLint/Prettier · Railway · GitHub Actions CI.
 
-## Commands (planned — scripts land in M1)
+## Commands
 
 ```bash
-pnpm dev              # tsx watch + pino-pretty
-pnpm build / start
+pnpm dev              # tsx watch src/index.ts + pino-pretty
+pnpm build / start    # tsc -p tsconfig.build.json → node dist/index.js
 pnpm db:generate      # drizzle-kit — migrations must be human-reviewed before apply
 pnpm db:migrate       # uses DATABASE_DIRECT_URL (port 5432), never the pooler
 pnpm db:seed          # idempotent: creator, Premium plan, sample drops, settings
-pnpm test / test:watch
-pnpm test:integration # real Postgres; runs locally/on-demand, not in CI yet
+pnpm test             # vitest run tests/unit  (unit only; the CI + default suite)
+pnpm test:watch       # vitest tests/unit
+pnpm test:integration # vitest --config vitest.integration.config.ts — real Postgres, local/on-demand, not in CI
 pnpm lint / format / typecheck
 ```
 
-CI (from M1): typecheck → lint (includes architecture boundary rules — violations fail the build) → unit tests.
+Run one test file: `pnpm test tests/unit/core/services/purchase.service.test.ts`. Filter by name: `pnpm test -t 'idempotency'`. Integration tests need local Postgres (M2 notes used PG17 via Docker on port 54329) and read `TEST_DATABASE_URL`.
+
+CI (`.github/workflows/ci.yml`): typecheck → lint (includes architecture boundary rules — violations fail the build) → unit tests.
 
 ## Architecture — the non-negotiables
 
