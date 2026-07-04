@@ -25,6 +25,7 @@ BOT_TOKEN=
 BOT_MODE=polling                   # polling | webhook
 WEBHOOK_URL=                       # webhook mode only
 WEBHOOK_SECRET_TOKEN=              # webhook mode only
+PORT=3000                          # webhook listener (Railway injects this)
 
 # Database (Supabase → Settings → Database)
 DATABASE_URL=                      # pooler, transaction mode, port 6543 (prepare:false)

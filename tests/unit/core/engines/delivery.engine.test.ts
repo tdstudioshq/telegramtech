@@ -58,6 +58,37 @@ describe('DeliveryEngine.deliver', () => {
     expect(audit?.correlationId).toBe('corr-d');
   });
 
+  it('emits ContentUnlocked on the FIRST delivery only (ADR-019)', async () => {
+    const { world, engine } = setup();
+    const creator = await givenCreator(world);
+    const drop = await givenPublishedDrop(world, creator, 'free');
+    const user = await givenUser(world);
+
+    await engine.deliver(user.id, drop.id);
+    expect(world.uow.dispatchedEvents.map((e) => e.type)).toEqual(['ContentUnlocked']);
+
+    await engine.deliver(user.id, drop.id);
+    // repeat delivery: audited again, but no second unlock event
+    expect(world.uow.dispatchedEvents.map((e) => e.type)).toEqual(['ContentUnlocked']);
+    expect(
+      world.store.state.auditLogs.filter((e) => e.action === 'content.delivered'),
+    ).toHaveLength(2);
+  });
+
+  it('first delivery is per-user: another user unlocking the same drop gets their own event', async () => {
+    const { world, engine } = setup();
+    const creator = await givenCreator(world);
+    const drop = await givenPublishedDrop(world, creator, 'free');
+    const alice = await givenUser(world);
+    const bob = await givenUser(world);
+
+    await engine.deliver(alice.id, drop.id);
+    await engine.deliver(bob.id, drop.id);
+
+    const unlocks = world.uow.dispatchedEvents.filter((e) => e.type === 'ContentUnlocked');
+    expect(unlocks.map((e) => e.userId).sort()).toEqual([alice.id, bob.id].sort());
+  });
+
   it('resolves media assets to signed deliverables via the ContentProvider', async () => {
     const { world, content, transport, engine } = setup();
     const creator = await givenCreator(world);

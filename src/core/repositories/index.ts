@@ -180,6 +180,17 @@ export interface DropRepository {
   publish(id: DropId, at: Date): Promise<Drop>;
   addAsset(asset: NewDropAsset): Promise<DropAsset>;
   listAssets(dropId: DropId): Promise<DropAsset[]>;
+  /**
+   * Write back a per-transport delivery id (e.g. Telegram file_id) into
+   * transport_cache under `key`. Rebuildable optimization, never authoritative
+   * (ADR-006) — merges into any existing cache map.
+   */
+  cacheAssetTransport(
+    creatorId: CreatorId,
+    assetId: DropAssetId,
+    key: string,
+    transportId: string,
+  ): Promise<void>;
 }
 
 export interface SubscriptionPlanRepository {
@@ -241,6 +252,14 @@ export interface AuditRepository {
   findByEntity(entityType: string, entityId: string): Promise<AuditLogEntry[]>;
   findByCreator(creatorId: CreatorId, limit?: number): Promise<AuditLogEntry[]>;
   findByCorrelation(correlationId: string): Promise<AuditLogEntry[]>;
+  /** First-delivery detection (ADR-019): has this actor already produced `action` on this entity? */
+  existsForActor(
+    creatorId: CreatorId,
+    action: string,
+    entityType: string,
+    entityId: string,
+    actorUserId: UserId,
+  ): Promise<boolean>;
 }
 
 export interface SettingsRepository {

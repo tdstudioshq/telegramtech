@@ -46,6 +46,7 @@ import type {
 } from '../../src/shared/entities.js';
 import type {
   CreatorId,
+  DropAssetId,
   DropId,
   GrantId,
   PaymentId,
@@ -263,6 +264,21 @@ class MemoryDropRepository implements DropRepository {
       .filter((a) => a.dropId === dropId)
       .sort((a, b) => a.position - b.position);
   }
+
+  async cacheAssetTransport(
+    creatorId: CreatorId,
+    assetId: DropAssetId,
+    key: string,
+    transportId: string,
+  ): Promise<void> {
+    const asset = this.store.state.dropAssets.find(
+      (candidate) => candidate.id === assetId && candidate.creatorId === creatorId,
+    );
+    if (asset !== undefined) {
+      asset.transportCache = { ...(asset.transportCache ?? {}), [key]: transportId };
+      asset.updatedAt = this.store.clock.now();
+    }
+  }
 }
 
 class MemorySubscriptionPlanRepository implements SubscriptionPlanRepository {
@@ -290,9 +306,7 @@ class MemorySubscriptionPlanRepository implements SubscriptionPlanRepository {
   }
 
   async findByCreatorAndName(creatorId: CreatorId, name: string): Promise<SubscriptionPlan | null> {
-    return (
-      this.store.state.plans.find((p) => p.creatorId === creatorId && p.name === name) ?? null
-    );
+    return this.store.state.plans.find((p) => p.creatorId === creatorId && p.name === name) ?? null;
   }
 }
 
@@ -332,7 +346,11 @@ class MemorySubscriptionRepository implements SubscriptionRepository {
     return this.store.state.subscriptions.find((s) => s.id === id) ?? null;
   }
 
-  async hasActiveForUserAndCreator(userId: UserId, creatorId: CreatorId, at: Date): Promise<boolean> {
+  async hasActiveForUserAndCreator(
+    userId: UserId,
+    creatorId: CreatorId,
+    at: Date,
+  ): Promise<boolean> {
     return this.store.state.subscriptions.some(
       (s) =>
         s.userId === userId &&
@@ -410,7 +428,11 @@ class MemoryPaymentRepository implements PaymentRepository {
     return this.store.state.payments.find((p) => p.idempotencyKey === idempotencyKey) ?? null;
   }
 
-  async markSucceeded(id: PaymentId, providerChargeId: string, rawPayload: unknown): Promise<Payment> {
+  async markSucceeded(
+    id: PaymentId,
+    providerChargeId: string,
+    rawPayload: unknown,
+  ): Promise<Payment> {
     const payment = this.store.state.payments.find((p) => p.id === id);
     if (payment === undefined) throw new Error(`payment ${id} not found`);
     payment.status = 'succeeded';
@@ -567,6 +589,23 @@ class MemoryAuditRepository implements AuditRepository {
 
   async findByCorrelation(correlationId: string): Promise<AuditLogEntry[]> {
     return this.store.state.auditLogs.filter((e) => e.correlationId === correlationId).reverse();
+  }
+
+  async existsForActor(
+    creatorId: CreatorId,
+    action: string,
+    entityType: string,
+    entityId: string,
+    actorUserId: UserId,
+  ): Promise<boolean> {
+    return this.store.state.auditLogs.some(
+      (e) =>
+        e.creatorId === creatorId &&
+        e.action === action &&
+        e.entityType === entityType &&
+        e.entityId === entityId &&
+        e.actorUserId === actorUserId,
+    );
   }
 }
 

@@ -47,11 +47,9 @@ describe('PurchaseService.purchaseDrop — happy path', () => {
     );
     expect(world.store.state.auditLogs.every((e) => e.correlationId === 'corr-1')).toBe(true);
 
-    // events dispatched strictly after commit
-    expect(world.uow.dispatchedEvents.map((e) => e.type)).toEqual([
-      'PurchaseCompleted',
-      'ContentUnlocked',
-    ]);
+    // events dispatched strictly after commit; ContentUnlocked belongs to
+    // DeliveryEngine after actual delivery, never to the purchase tx (ADR-019)
+    expect(world.uow.dispatchedEvents.map((e) => e.type)).toEqual(['PurchaseCompleted']);
   });
 
   it('entitlement flips: the user can access the drop after purchase', async () => {
@@ -121,9 +119,17 @@ describe('PurchaseService.purchaseDrop — idempotency', () => {
     const drop = await givenPublishedDrop(world, creator, 'pay_per_unlock', 50);
     const user = await givenUser(world);
 
-    const first = await service.purchaseDrop({ userId: user.id, dropId: drop.id, idempotencyKey: 'dup' });
+    const first = await service.purchaseDrop({
+      userId: user.id,
+      dropId: drop.id,
+      idempotencyKey: 'dup',
+    });
     const callsAfterFirst = provider.calls.length;
-    const second = await service.purchaseDrop({ userId: user.id, dropId: drop.id, idempotencyKey: 'dup' });
+    const second = await service.purchaseDrop({
+      userId: user.id,
+      dropId: drop.id,
+      idempotencyKey: 'dup',
+    });
 
     expect(first.ok && second.ok).toBe(true);
     if (!first.ok || !second.ok) return;
@@ -141,7 +147,11 @@ describe('PurchaseService.purchaseDrop — idempotency', () => {
     provider.failNext();
 
     await service.purchaseDrop({ userId: user.id, dropId: drop.id, idempotencyKey: 'dup-f' });
-    const replay = await service.purchaseDrop({ userId: user.id, dropId: drop.id, idempotencyKey: 'dup-f' });
+    const replay = await service.purchaseDrop({
+      userId: user.id,
+      dropId: drop.id,
+      idempotencyKey: 'dup-f',
+    });
 
     expect(replay.ok).toBe(false);
     if (replay.ok) return;
@@ -149,7 +159,11 @@ describe('PurchaseService.purchaseDrop — idempotency', () => {
     expect(world.store.state.payments).toHaveLength(1);
 
     // …and a fresh key succeeds
-    const retry = await service.purchaseDrop({ userId: user.id, dropId: drop.id, idempotencyKey: 'fresh' });
+    const retry = await service.purchaseDrop({
+      userId: user.id,
+      dropId: drop.id,
+      idempotencyKey: 'fresh',
+    });
     expect(retry.ok).toBe(true);
   });
 
@@ -161,7 +175,11 @@ describe('PurchaseService.purchaseDrop — idempotency', () => {
     const user = await givenUser(world);
 
     await service.purchaseDrop({ userId: user.id, dropId: dropA.id, idempotencyKey: 'shared' });
-    const reused = await service.purchaseDrop({ userId: user.id, dropId: dropB.id, idempotencyKey: 'shared' });
+    const reused = await service.purchaseDrop({
+      userId: user.id,
+      dropId: dropB.id,
+      idempotencyKey: 'shared',
+    });
 
     expect(reused.ok).toBe(false);
     if (reused.ok) return;
@@ -182,7 +200,11 @@ describe('PurchaseService.purchaseDrop — validation short-circuits', () => {
       grantType: 'manual',
     });
 
-    const result = await service.purchaseDrop({ userId: user.id, dropId: drop.id, idempotencyKey: 'k' });
+    const result = await service.purchaseDrop({
+      userId: user.id,
+      dropId: drop.id,
+      idempotencyKey: 'k',
+    });
 
     expect(result.ok).toBe(false);
     if (result.ok) return;
@@ -197,7 +219,11 @@ describe('PurchaseService.purchaseDrop — validation short-circuits', () => {
     const drop = await givenPublishedDrop(world, creator, 'free');
     const user = await givenUser(world);
 
-    const result = await service.purchaseDrop({ userId: user.id, dropId: drop.id, idempotencyKey: 'k' });
+    const result = await service.purchaseDrop({
+      userId: user.id,
+      dropId: drop.id,
+      idempotencyKey: 'k',
+    });
 
     expect(result.ok).toBe(false);
     if (result.ok) return;
@@ -211,7 +237,11 @@ describe('PurchaseService.purchaseDrop — validation short-circuits', () => {
     const drop = await givenPublishedDrop(world, creator, 'premium');
     const user = await givenUser(world);
 
-    const result = await service.purchaseDrop({ userId: user.id, dropId: drop.id, idempotencyKey: 'k' });
+    const result = await service.purchaseDrop({
+      userId: user.id,
+      dropId: drop.id,
+      idempotencyKey: 'k',
+    });
 
     expect(result.ok).toBe(false);
     if (result.ok) return;
@@ -245,7 +275,11 @@ describe('PurchaseService.purchaseDrop — validation short-circuits', () => {
     const drop = await givenPublishedDrop(world, creator, 'pay_per_unlock', 50);
     const user = await givenUser(world);
 
-    const result = await service.purchaseDrop({ userId: user.id, dropId: drop.id, idempotencyKey: 'k' });
+    const result = await service.purchaseDrop({
+      userId: user.id,
+      dropId: drop.id,
+      idempotencyKey: 'k',
+    });
 
     expect(result.ok).toBe(false);
     if (result.ok) return;

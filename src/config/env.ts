@@ -19,6 +19,7 @@ const envSchema = z
     BOT_MODE: z.enum(['polling', 'webhook']).default('polling'),
     WEBHOOK_URL: z.url().optional(),
     WEBHOOK_SECRET_TOKEN: z.string().min(1).optional(),
+    PORT: z.coerce.number().int().positive().max(65_535).default(3000),
 
     // Database
     DATABASE_URL: z.string().min(1),

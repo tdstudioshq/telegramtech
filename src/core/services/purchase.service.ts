@@ -105,7 +105,10 @@ export class PurchaseService {
         };
       }
       if (decision.drop === null) {
-        return { kind: 'error', error: appError('not_found', 'Drop not found.', { dropId: input.dropId }) };
+        return {
+          kind: 'error',
+          error: appError('not_found', 'Drop not found.', { dropId: input.dropId }),
+        };
       }
       const drop = decision.drop;
       if (drop.accessType !== 'pay_per_unlock' || drop.priceStars === null) {
@@ -121,7 +124,10 @@ export class PurchaseService {
       if (!creator.ok) return { kind: 'error', error: creator.error };
       const user = await repos.users.findById(input.userId);
       if (user === null) {
-        return { kind: 'error', error: appError('not_found', 'User not found.', { userId: input.userId }) };
+        return {
+          kind: 'error',
+          error: appError('not_found', 'User not found.', { userId: input.userId }),
+        };
       }
 
       const attempt = await this.beginAttempt(repos, {
@@ -156,9 +162,13 @@ export class PurchaseService {
         });
       });
       return err(
-        appError('payment_failed', 'Payment failed — you have not been charged. Please try again.', {
-          reason: confirmation.reason,
-        }),
+        appError(
+          'payment_failed',
+          'Payment failed — you have not been charged. Please try again.',
+          {
+            reason: confirmation.reason,
+          },
+        ),
       );
     }
 
@@ -186,13 +196,8 @@ export class PurchaseService {
         correlationId: input.correlationId,
         context: { dropId: input.dropId, sourcePurchaseId: finalized.purchase.id },
       });
-      events.raise({
-        type: 'ContentUnlocked',
-        userId: input.userId,
-        creatorId: grant.creatorId,
-        dropId: input.dropId,
-        occurredAt: this.clock.now(),
-      });
+      // ContentUnlocked is NOT raised here — DeliveryEngine emits it after the
+      // content is actually delivered (ADR-019 ruling).
       return ok({ ...finalized, grant });
     });
   }
@@ -286,7 +291,11 @@ export class PurchaseService {
       actorType: 'user',
       actorUserId: purchase.userId,
       correlationId: ctx.correlationId,
-      context: { amountStars: purchase.amountStars, dropId: purchase.dropId, planId: purchase.planId },
+      context: {
+        amountStars: purchase.amountStars,
+        dropId: purchase.dropId,
+        planId: purchase.planId,
+      },
     });
     events.raise({
       type: 'PurchaseCompleted',
@@ -356,9 +365,13 @@ export class PurchaseService {
       }
       case 'failed':
         return err(
-          appError('payment_failed', 'Payment failed — you have not been charged. Please try again.', {
-            replayed: true,
-          }),
+          appError(
+            'payment_failed',
+            'Payment failed — you have not been charged. Please try again.',
+            {
+              replayed: true,
+            },
+          ),
         );
       case 'in_flight':
         return err(

@@ -43,6 +43,7 @@ import type {
 } from '../../../shared/entities.js';
 import type {
   CreatorId,
+  DropAssetId,
   DropId,
   GrantId,
   PaymentId,
@@ -160,6 +161,24 @@ export class DrizzleDropRepository implements DropRepository {
       .where(eq(dropAssets.dropId, dropId))
       .orderBy(dropAssets.position);
     return rows.map(mapAsset);
+  }
+
+  async cacheAssetTransport(
+    creatorId: CreatorId,
+    assetId: DropAssetId,
+    key: string,
+    transportId: string,
+  ): Promise<void> {
+    // jsonb merge: preserve other transports' cached ids, set/overwrite this key.
+    // The merge object is a bound parameter (cast text → jsonb), never interpolated.
+    const patch = JSON.stringify({ [key]: transportId });
+    await this.db
+      .update(dropAssets)
+      .set({
+        transportCache: sql`coalesce(${dropAssets.transportCache}, '{}'::jsonb) || ${patch}::jsonb`,
+        updatedAt: sql`now()`,
+      })
+      .where(and(eq(dropAssets.id, assetId), eq(dropAssets.creatorId, creatorId)));
   }
 }
 
@@ -428,6 +447,29 @@ export class DrizzleAuditRepository implements AuditRepository {
       .from(auditLogs)
       .where(eq(auditLogs.correlationId, correlationId))
       .orderBy(desc(auditLogs.createdAt));
+  }
+
+  async existsForActor(
+    creatorId: CreatorId,
+    action: string,
+    entityType: string,
+    entityId: string,
+    actorUserId: UserId,
+  ): Promise<boolean> {
+    const rows = await this.db
+      .select({ exists: sql<number>`1` })
+      .from(auditLogs)
+      .where(
+        and(
+          eq(auditLogs.creatorId, creatorId),
+          eq(auditLogs.action, action),
+          eq(auditLogs.entityType, entityType),
+          eq(auditLogs.entityId, entityId),
+          eq(auditLogs.actorUserId, actorUserId),
+        ),
+      )
+      .limit(1);
+    return rows.length > 0;
   }
 }
 

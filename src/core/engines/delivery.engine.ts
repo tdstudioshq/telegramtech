@@ -76,7 +76,15 @@ export class DeliveryEngine {
       if (!sent.ok) return sent;
     }
 
-    await this.uow.run(async (repos) => {
+    await this.uow.run(async (repos, events) => {
+      // first delivery for (user, drop)? checked before this delivery's own row lands
+      const deliveredBefore = await repos.audit.existsForActor(
+        creatorId,
+        'content.delivered',
+        'drop',
+        dropId,
+        userId,
+      );
       await this.audit.record(repos, {
         creatorId,
         action: 'content.delivered',
@@ -87,6 +95,17 @@ export class DeliveryEngine {
         correlationId,
         context: { assetCount: assets.length },
       });
+      // ADR-019: ContentUnlocked is emitted here — only after content actually
+      // reached the user, and only on their first delivery of this drop.
+      if (!deliveredBefore) {
+        events.raise({
+          type: 'ContentUnlocked',
+          userId,
+          creatorId,
+          dropId,
+          occurredAt: this.clock.now(),
+        });
+      }
     });
     return ok({ deliveredAssets: assets.length });
   }
@@ -94,12 +113,16 @@ export class DeliveryEngine {
   private async resolveContent(asset: DropAsset): Promise<Result<TransportContent, AppError>> {
     if (asset.contentType === 'text') {
       if (asset.textContent === null) {
-        return err(appError('internal', 'This content is temporarily unavailable.', { assetId: asset.id }));
+        return err(
+          appError('internal', 'This content is temporarily unavailable.', { assetId: asset.id }),
+        );
       }
       return ok({ kind: 'text', text: asset.textContent });
     }
     if (asset.storageBucket === null || asset.storagePath === null) {
-      return err(appError('internal', 'This content is temporarily unavailable.', { assetId: asset.id }));
+      return err(
+        appError('internal', 'This content is temporarily unavailable.', { assetId: asset.id }),
+      );
     }
     const deliverable = await this.content.getDeliverable(asset.storageBucket, asset.storagePath);
     if (!deliverable.ok) return deliverable;

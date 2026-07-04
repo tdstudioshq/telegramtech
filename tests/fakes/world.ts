@@ -32,7 +32,7 @@ export const createWorld = (): TestWorld => {
     store,
     dispatcher,
     uow,
-    access: new AccessService(clock),
+    access: new AccessService(uow, clock),
     audit: new AuditService(),
   };
 };

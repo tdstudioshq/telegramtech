@@ -11,7 +11,7 @@
 import { appError, type AppError } from '../../shared/app-error.js';
 import { err, ok, type Result } from '../../shared/result.js';
 import type { Payment, Purchase, Subscription, SubscriptionPlan } from '../../shared/entities.js';
-import type { PlanId, UserId } from '../../shared/domain.js';
+import type { CreatorId, PlanId, UserId } from '../../shared/domain.js';
 import type { Clock } from '../ports/clock.port.js';
 import type { UnitOfWork } from '../repositories/index.js';
 import { AuditService } from './audit.service.js';
@@ -53,7 +53,10 @@ export class SubscriptionService {
     const setup = await this.uow.run(async (repos): Promise<Setup> => {
       const plan = await repos.plans.findById(input.planId);
       if (plan === null || plan.status !== 'active') {
-        return { kind: 'error', error: appError('not_found', 'Plan not available.', { planId: input.planId }) };
+        return {
+          kind: 'error',
+          error: appError('not_found', 'Plan not available.', { planId: input.planId }),
+        };
       }
 
       const replay = await this.purchases.resolveReplay(repos, input.idempotencyKey);
@@ -73,7 +76,10 @@ export class SubscriptionService {
       if (!creator.ok) return { kind: 'error', error: creator.error };
       const user = await repos.users.findById(input.userId);
       if (user === null) {
-        return { kind: 'error', error: appError('not_found', 'User not found.', { userId: input.userId }) };
+        return {
+          kind: 'error',
+          error: appError('not_found', 'User not found.', { userId: input.userId }),
+        };
       }
       const existing = await repos.subscriptions.findActiveForUserAndCreator(
         input.userId,
@@ -82,9 +88,13 @@ export class SubscriptionService {
       if (existing !== null && existing.planId !== input.planId) {
         return {
           kind: 'error',
-          error: appError('conflict', 'You already have a different active plan with this creator.', {
-            activePlanId: existing.planId,
-          }),
+          error: appError(
+            'conflict',
+            'You already have a different active plan with this creator.',
+            {
+              activePlanId: existing.planId,
+            },
+          ),
         };
       }
 
@@ -120,9 +130,13 @@ export class SubscriptionService {
         });
       });
       return err(
-        appError('payment_failed', 'Payment failed — you have not been charged. Please try again.', {
-          reason: confirmation.reason,
-        }),
+        appError(
+          'payment_failed',
+          'Payment failed — you have not been charged. Please try again.',
+          {
+            reason: confirmation.reason,
+          },
+        ),
       );
     }
 
@@ -194,6 +208,23 @@ export class SubscriptionService {
     });
   }
 
+  /** Client read path: resolve an active plan without exposing repositories. */
+  async getActivePlan(planId: PlanId): Promise<Result<SubscriptionPlan, AppError>> {
+    return this.uow.run(async (repos) => {
+      const plan = await repos.plans.findById(planId);
+      return plan === null || plan.status !== 'active'
+        ? err(appError('not_found', 'Plan not available.', { planId }))
+        : ok(plan);
+    });
+  }
+
+  /** Client read path used by access/library views. */
+  async hasActiveSubscription(userId: UserId, creatorId: CreatorId): Promise<boolean> {
+    return this.uow.run(async (repos) =>
+      repos.subscriptions.hasActiveForUserAndCreator(userId, creatorId, this.clock.now()),
+    );
+  }
+
   /**
    * The expiration sweep (called by the M5 job): flip lapsed actives to expired,
    * audit as `job`, raise SubscriptionExpired per row. Idempotent — markExpired's
@@ -247,13 +278,22 @@ export class SubscriptionService {
             }),
           );
         }
-        return ok({ subscription, payment: replay.payment, purchase: replay.purchase, renewed: false });
+        return ok({
+          subscription,
+          payment: replay.payment,
+          purchase: replay.purchase,
+          renewed: false,
+        });
       }
       case 'failed':
         return err(
-          appError('payment_failed', 'Payment failed — you have not been charged. Please try again.', {
-            replayed: true,
-          }),
+          appError(
+            'payment_failed',
+            'Payment failed — you have not been charged. Please try again.',
+            {
+              replayed: true,
+            },
+          ),
         );
       case 'in_flight':
         return err(

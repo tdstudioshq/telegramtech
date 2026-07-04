@@ -25,10 +25,11 @@
 - [x] AuditService in-transaction; event handlers (notification intents, audit enrichment, analytics no-op)
 - [x] Also delivered (core-layer completeness): DeliveryEngine + NotificationEngine (§1 engines — port-only, unit-tested; Telegram transport/notifier remain M4)
 
-### M4 — Telegram adapter
-- [ ] Telegraf factory (mode from config) · middleware chain (correlation→log→rate-limit(CacheProvider)→auth→error)
-- [ ] /start /help /drops (browse w/ access-type badges + pagination) /library /premium
-- [ ] Unlock + subscribe callback flows · TelegramContentTransport (signed-URL upload, protect_content, transport_cache write-back) · TelegramNotifier
+### M4 — Telegram adapter ✅ (Session 6, 2026-07-04)
+- [x] Telegraf factory (polling/webhook mode from config) · middleware chain (correlation→log→rate-limit(CacheProvider)→auth→error)
+- [x] /start /help /browse (access-type badges + pagination) /unlock /subscribe /my_access · detail callback flow
+- [x] Unlock + subscribe callbacks · TelegramContentTransport (signed-URL upload, protect_content, tenant-scoped transport_cache write-back) · TelegramNotifier
+- [x] Composition root (`app.ts`) + boot/shutdown (`index.ts`) · 142 unit + 21 integration tests · typecheck/lint/build green
 
 ### M5 — Jobs & lifecycle
 - [ ] scheduler.ts (intervals, cache locks, crash isolation, run metrics logs)

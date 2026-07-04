@@ -11,7 +11,7 @@
 import type { Drop } from '../../shared/entities.js';
 import type { DropId, UserId } from '../../shared/domain.js';
 import type { Clock } from '../ports/clock.port.js';
-import type { Repositories } from '../repositories/index.js';
+import type { Repositories, UnitOfWork } from '../repositories/index.js';
 
 export type AccessBasis = 'free' | 'subscription' | 'grant';
 
@@ -22,7 +22,19 @@ export type AccessDecision =
   | { readonly allowed: false; readonly reason: AccessDenialReason; readonly drop: Drop | null };
 
 export class AccessService {
-  constructor(private readonly clock: Clock) {}
+  constructor(
+    private readonly uow: UnitOfWork,
+    private readonly clock: Clock,
+  ) {}
+
+  /**
+   * Standalone entitlement query for read paths (client adapters, /my_access).
+   * Opens its own read transaction; `canAccess` remains the primitive that
+   * tx-owning callers (PurchaseService) invoke inside their own transaction.
+   */
+  async resolveAccess(userId: UserId, dropId: DropId): Promise<AccessDecision> {
+    return this.uow.run(async (repos) => this.canAccess(repos, userId, dropId));
+  }
 
   async canAccess(repos: Repositories, userId: UserId, dropId: DropId): Promise<AccessDecision> {
     const drop = await repos.drops.findById(dropId);

@@ -123,3 +123,11 @@ Launch mode is config. Webhook adds secret-token verification and fast-ack + ide
 ## ADR-018 — CI from day one (Q5)
 
 GitHub Actions on push/PR: `pnpm typecheck && pnpm lint && pnpm test` (unit). Integration tests run locally/on-demand until a test-DB workflow is added (tracked debt). Boundary-rule ESLint runs in CI, so architectural violations fail the build — the dependency rules are enforced, not aspirational.
+
+## ADR-019 — ContentUnlocked is emitted by DeliveryEngine after actual delivery
+
+**Decision.** `ContentUnlocked` is raised only by `DeliveryEngine`, in the same transaction as the `content.delivered` audit row, and only on a user's **first** delivery of a drop (detected via prior `content.delivered` audit rows for that user+drop). `PurchaseService` raises `PurchaseCompleted` only. (Tyler ruling, 2026-07-04 — resolves the §6-diagram/§9-table conflict noted during M3.)
+**Alternatives.** Raise it in PurchaseService's grant-minting transaction (M3's original interpretation — semantically "unlocked" meant "entitled", not "received"); raise on every delivery (event spam; enrichment rows duplicate content.delivered).
+**Why.** The event's meaning is that a user actually received previously-locked content. Purchase success ≠ delivery success (transport can fail); tying the event to delivery keeps handlers (analytics, enrichment) honest about what happened. First-delivery-only preserves signal for free/premium drops too, where no purchase precedes delivery.
+**Trade-offs.** First-delivery detection reads the audit log (an extra indexed query per delivery); concurrent first deliveries could double-emit — handlers are idempotent by contract, accepted.
+**Future.** If the audit-log read becomes hot, materialize a delivery ledger; the event contract doesn't change.

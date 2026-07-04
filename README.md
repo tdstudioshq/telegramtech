@@ -3,7 +3,7 @@
 A **creator monetization platform**. The core is a channel-agnostic business engine — catalog, payments, entitlements, subscriptions, content delivery, domain events. **Telegram is the first client adapter.** Creators sell free, premium-gated, and pay-per-unlock content; the MVP uses mock payments shaped after the real Telegram Stars lifecycle.
 
 ## Status
-**Session 2 complete — architecture revised, zero implementation code.** Blocking gate: schema + architecture approval. See `PROJECT-MEMORY.md`.
+**M4 complete — Telegram adapter implemented and verified.** M0–M4 are complete; M5 jobs/lifecycle work has not started. See `docs/PROJECT-MEMORY.md`.
 
 ## Read in this order
 1. `docs/SYSTEM_ARCHITECTURE.md` — zones, all flow diagrams, dependency rules, multi-tenancy, jobs, events *(supersedes ARCHITECTURE.md)*

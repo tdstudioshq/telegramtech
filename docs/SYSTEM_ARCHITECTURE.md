@@ -206,9 +206,10 @@ sequenceDiagram
     alt provider succeeds
         PP-->>PS: succeeded(chargeId)
         PS->>R: TX: payment→succeeded · purchase→completed\ninsert access_grant · audit rows
-        PS->>EV: after commit: PurchaseCompleted, ContentUnlocked
+        PS->>EV: after commit: PurchaseCompleted
         EV->>DE: (handler) deliver(userId, dropId)
         DE->>U: content via ContentProvider→ContentTransport
+        DE->>EV: ContentUnlocked (after actual delivery — ADR-019)
     else provider fails
         PP-->>PS: failed(reason)
         PS->>R: TX: payment→failed · purchase→failed · audit
