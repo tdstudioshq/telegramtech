@@ -1,0 +1,252 @@
+/**
+ * Repository interfaces — consumed by core services, implemented in
+ * adapters/persistence (ADR-009). SQL in, domain types out. Repositories always
+ * filter by creator_id where tenant-owned (ADR-012). Method sets are the minimum
+ * required by M2 (constraints, seed, entitlement predicate); M3 services extend them.
+ */
+import type {
+  AccessGrant,
+  AuditLogEntry,
+  BotSetting,
+  Creator,
+  Drop,
+  DropAsset,
+  Payment,
+  Purchase,
+  Subscription,
+  SubscriptionPlan,
+  SystemSetting,
+  User,
+} from '../../shared/entities.js';
+import type {
+  AccessType,
+  AuditActorType,
+  ContentType,
+  CreatorId,
+  CreatorStatus,
+  DropAssetId,
+  DropId,
+  DropStatus,
+  GrantId,
+  GrantType,
+  PaymentId,
+  PaymentProviderName,
+  PaymentStatus,
+  PlanId,
+  PlanStatus,
+  PurchaseId,
+  PurchaseStatus,
+  Stars,
+  SubscriptionStatus,
+  UserId,
+} from '../../shared/domain.js';
+import type { EventBuffer } from '../events/dispatcher.js';
+
+// ---- creation inputs (ids optional so the seed can be deterministic) ----
+
+export interface NewUser {
+  id?: UserId;
+  telegramId: bigint;
+  username?: string | null;
+  firstName?: string | null;
+  lastName?: string | null;
+  languageCode?: string | null;
+}
+
+export interface NewCreator {
+  id?: CreatorId;
+  userId: UserId;
+  displayName: string;
+  bio?: string | null;
+  status: CreatorStatus;
+}
+
+export interface NewDrop {
+  id?: DropId;
+  creatorId: CreatorId;
+  title: string;
+  description?: string | null;
+  previewText?: string | null;
+  accessType: AccessType;
+  priceStars?: Stars | null;
+  status: DropStatus;
+  publishedAt?: Date | null;
+}
+
+export interface NewDropAsset {
+  id?: DropAssetId;
+  dropId: DropId;
+  creatorId: CreatorId;
+  position: number;
+  contentType: ContentType;
+  storageBucket?: string | null;
+  storagePath?: string | null;
+  mimeType?: string | null;
+  fileSizeBytes?: bigint | null;
+  textContent?: string | null;
+}
+
+export interface NewSubscriptionPlan {
+  id?: PlanId;
+  creatorId: CreatorId;
+  name: string;
+  description?: string | null;
+  priceStars: Stars;
+  durationDays: number;
+  status: PlanStatus;
+}
+
+export interface NewSubscription {
+  id?: string;
+  userId: UserId;
+  planId: PlanId;
+  creatorId: CreatorId;
+  status: SubscriptionStatus;
+  startedAt: Date;
+  expiresAt: Date;
+}
+
+export interface NewPayment {
+  id?: PaymentId;
+  creatorId: CreatorId;
+  provider: PaymentProviderName;
+  providerChargeId?: string | null;
+  idempotencyKey: string;
+  amountStars: Stars;
+  status: PaymentStatus;
+  rawPayload?: unknown;
+}
+
+export interface NewPurchase {
+  id?: PurchaseId;
+  userId: UserId;
+  creatorId: CreatorId;
+  dropId?: DropId | null;
+  planId?: PlanId | null;
+  paymentId: PaymentId;
+  amountStars: Stars;
+  status: PurchaseStatus;
+}
+
+export interface NewAccessGrant {
+  id?: GrantId;
+  userId: UserId;
+  dropId: DropId;
+  creatorId: CreatorId;
+  grantType: GrantType;
+  sourcePurchaseId?: PurchaseId | null;
+}
+
+export interface NewAuditEntry {
+  creatorId?: CreatorId | null;
+  action: string;
+  entityType: string;
+  entityId: string;
+  actorType: AuditActorType;
+  actorUserId?: UserId | null;
+  correlationId?: string | null;
+  context?: unknown;
+}
+
+export interface NewSystemSetting {
+  key: string;
+  category: string;
+  value: unknown;
+  description?: string | null;
+}
+
+// ---- repositories ----
+
+export interface UserRepository {
+  create(user: NewUser): Promise<User>;
+  findById(id: UserId): Promise<User | null>;
+  findByTelegramId(telegramId: bigint): Promise<User | null>;
+}
+
+export interface CreatorRepository {
+  create(creator: NewCreator): Promise<Creator>;
+  findById(id: CreatorId): Promise<Creator | null>;
+  findByUserId(userId: UserId): Promise<Creator | null>;
+}
+
+export interface DropRepository {
+  create(drop: NewDrop): Promise<Drop>;
+  findById(id: DropId): Promise<Drop | null>;
+  listPublishedByCreator(creatorId: CreatorId): Promise<Drop[]>;
+  addAsset(asset: NewDropAsset): Promise<DropAsset>;
+  listAssets(dropId: DropId): Promise<DropAsset[]>;
+}
+
+export interface SubscriptionPlanRepository {
+  create(plan: NewSubscriptionPlan): Promise<SubscriptionPlan>;
+  findById(id: PlanId): Promise<SubscriptionPlan | null>;
+  findByCreatorAndName(creatorId: CreatorId, name: string): Promise<SubscriptionPlan | null>;
+}
+
+export interface SubscriptionRepository {
+  create(subscription: NewSubscription): Promise<Subscription>;
+  findById(id: string): Promise<Subscription | null>;
+  /** THE premium entitlement predicate (ADR-011): active subscription with expires_at > at. */
+  hasActiveForUserAndCreator(userId: UserId, creatorId: CreatorId, at: Date): Promise<boolean>;
+}
+
+export interface PaymentRepository {
+  create(payment: NewPayment): Promise<Payment>;
+  findById(id: PaymentId): Promise<Payment | null>;
+  findByIdempotencyKey(idempotencyKey: string): Promise<Payment | null>;
+}
+
+export interface PurchaseRepository {
+  create(purchase: NewPurchase): Promise<Purchase>;
+  findById(id: PurchaseId): Promise<Purchase | null>;
+  listByUser(userId: UserId): Promise<Purchase[]>;
+}
+
+export interface AccessGrantRepository {
+  create(grant: NewAccessGrant): Promise<AccessGrant>;
+  findById(id: GrantId): Promise<AccessGrant | null>;
+  /** Live = revoked_at IS NULL (the access predicate). */
+  findLiveGrant(userId: UserId, dropId: DropId): Promise<AccessGrant | null>;
+  revoke(id: GrantId, at: Date): Promise<void>;
+}
+
+/**
+ * Append-only by construction (DATABASE.md rev 2.2 §10): exposes append/find* ONLY.
+ * update()/delete() must never exist on this interface — the audit log is immutable.
+ */
+export interface AuditRepository {
+  append(entry: NewAuditEntry): Promise<AuditLogEntry>;
+  find(limit?: number): Promise<AuditLogEntry[]>;
+  findByEntity(entityType: string, entityId: string): Promise<AuditLogEntry[]>;
+  findByCreator(creatorId: CreatorId, limit?: number): Promise<AuditLogEntry[]>;
+  findByCorrelation(correlationId: string): Promise<AuditLogEntry[]>;
+}
+
+export interface SettingsRepository {
+  getSystem(key: string): Promise<SystemSetting | null>;
+  /** Insert if absent; never clobbers an existing value (idempotent seed semantics). */
+  upsertSystem(setting: NewSystemSetting): Promise<SystemSetting>;
+  getBot(creatorId: CreatorId | null, key: string): Promise<BotSetting | null>;
+}
+
+export interface Repositories {
+  users: UserRepository;
+  creators: CreatorRepository;
+  drops: DropRepository;
+  plans: SubscriptionPlanRepository;
+  subscriptions: SubscriptionRepository;
+  payments: PaymentRepository;
+  purchases: PurchaseRepository;
+  accessGrants: AccessGrantRepository;
+  audit: AuditRepository;
+  settings: SettingsRepository;
+}
+
+/**
+ * Unit of work (ADR-009): composes multi-repo transactions. Events raised into the
+ * buffer during `fn` are dispatched strictly AFTER commit (ADR-010); if `fn` throws,
+ * the transaction rolls back and the buffer is never drained.
+ */
+export interface UnitOfWork {
+  run<T>(fn: (repos: Repositories, events: EventBuffer) => Promise<T>): Promise<T>;
+}

@@ -1,0 +1,19 @@
+# dependencies
+node_modules/
+
+# build output
+dist/
+
+# environment — .env is never committed; .env.example is the config documentation
+.env
+.env.local
+
+# test artifacts
+coverage/
+
+# supabase CLI link state (contains connection details)
+supabase/.temp/
+
+# misc
+*.log
+.DS_Store

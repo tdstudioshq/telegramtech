@@ -6,6 +6,10 @@ Postgres (Supabase). Drizzle schema; migrations generated only after this revisi
 
 Conventions (unchanged): uuid PKs · `bigint` telegram ids · integer Stars, never floats · `timestamptz` · Postgres enums · status transitions over deletion.
 
+**Rev 2.1 (2026-07-04):** `audit_logs` (§10) and `system_settings` (§11) are now fully specified inline, derived from the current architecture only — this document no longer references superseded Session-1 material anywhere a column definition depends on it. No other tables changed.
+
+**Rev 2.2 (2026-07-04):** Tyler-approved revisions to rev 2.1 applied: `audit_logs.action` → `varchar(100)` and `audit_logs.entity_type` → `varchar(50)` (no enums; allowed values Zod-validated in the application layer) · `system_settings` gains `category varchar(50)` and nullable `updated_by uuid FK → users` · AuditRepository documented as append-only (`append`/`find*` only, never `update`/`delete`). Pending Tyler's approval before M2 migration generation.
+
 ## Entity relationship overview
 
 ```mermaid
@@ -113,13 +117,44 @@ premium         → published AND EXISTS subscription(user, drop.creator_id,
 pay_per_unlock  → published AND EXISTS grant(user, drop, revoked_at IS NULL)
 ```
 
-### 10. audit_logs (revised: +creator_id)
-As S1 plus `creator_id uuid null` (null = platform-level event). Append-only, no updates/deletes. Actions extended: `payment.succeeded/failed`, `purchase.completed`, `subscription.activated/expired/renewed`, `grant.created/revoked`, `content.delivered`, `content.uploaded`.
-Indexes: `(entity_type, entity_id)`, `(creator_id, created_at)`, BRIN on created_at at volume.
+### 10. audit_logs (rev 2.2 — fully specified, self-contained)
+Append-only ledger. Every money/access mutation writes its row **in the same transaction** as the mutation (golden rule 4); domain-event handlers may append *enrichment* rows after commit, but the core row is never event-driven (ADR-010).
 
-### 11. bot_settings (revised: tenant-scopable) & system_settings
+| Column | Type | Purpose |
+|---|---|---|
+| id | uuid PK | row identity |
+| creator_id | uuid FK → creators, null | tenant attribution for per-creator timelines (ADR-012); **NULL = platform-level event** (e.g. user registration) |
+| action | varchar(100) not null | what happened, dot-namespaced `entity.verb`: `user.registered`, `payment.succeeded`, `payment.failed`, `purchase.completed`, `subscription.activated`, `subscription.expired`, `subscription.renewed`, `grant.created`, `grant.revoked`, `content.delivered`, `content.uploaded`. Deliberately **varchar, not a Postgres enum**: the vocabulary grows with every feature, and an append-only ledger must accept new verbs without a migration. Bounded at 100 chars to prevent arbitrary-length values and keep the index tight. Allowed values are validated in the application layer — AuditService's typed Zod list (ADR-013) — so free-text drift cannot occur in practice. |
+| entity_type | varchar(50) not null | which aggregate the entry describes: `user`, `creator`, `drop`, `drop_asset`, `subscription_plan`, `subscription`, `purchase`, `payment`, `access_grant`. **varchar(50), not an enum**, for the same extensibility reason as `action`; allowed values Zod-validated in the application layer. |
+| entity_id | uuid not null | PK of the affected row. No FK — the reference is polymorphic across `entity_type`, which a single FK cannot express; integrity is guaranteed by AuditService writing in the same transaction as the mutation it records. |
+| actor_type | enum: `user` \| `system` \| `job`, not null | who caused the mutation: a user action via a client adapter, the platform itself (seed, manual ops/comps), or a background job (e.g. the expiration sweep). Closed set → Postgres enum per conventions. |
+| actor_user_id | uuid FK → users, null | the acting user when `actor_type='user'`; NULL otherwise (CHECK below) |
+| correlation_id | text null | the Pino correlationId of the originating update or job-run (ADR-015), so any ledger row can be joined to its structured logs when investigating an incident |
+| context | jsonb null | action-specific snapshot: `amount_stars`, `provider`, failure `reason`, `storage_path`, `expires_at`, etc. (jsonb flexibility per ADR-002). Never authoritative — authoritative state lives in the domain tables; this exists so the ledger reads standalone. |
+| created_at | timestamptz not null default now() | when the row was written (same transaction as the mutation it records) |
+
+Constraints & indexes:
+- **Append-only:** no `updated_at` by design; AuditService issues INSERTs only, never UPDATE/DELETE. DB-level revocation of UPDATE/DELETE arrives with RLS (debt #2).
+- **Repository contract (AuditRepository):** append-only by construction. It exposes `append()`, `find()`, `findByEntity()`, `findByCreator()`, `findByCorrelation()` — and **never** `update()` or `delete()`. The audit log is immutable by design; immutability is enforced at the repository interface, not left to caller discipline.
+- CHECK: `(actor_type = 'user') = (actor_user_id IS NOT NULL)` — user actions always name the user; system/job actions never do.
+- Indexes: `(entity_type, entity_id)` — "full history of this row"; `(creator_id, created_at)` — per-tenant timelines and future creator dashboards; BRIN on `created_at` at volume.
+
+### 11. bot_settings (revised: tenant-scopable) & system_settings (rev 2.2 — fully specified)
 `bot_settings`: `id`, **`creator_id uuid FK null`** (null = platform default; row with creator_id overrides), `key`, `value jsonb` (Zod-validated on read), `description`, `updated_at`. Unique `(creator_id, key)` with null-distinct handling via coalesced unique index.
-`system_settings`: unchanged — global platform switches (`maintenance_mode`, `payments.mock_enabled`, `sweep.interval`).
+
+`system_settings` — global platform switches. Same shape as `bot_settings` minus tenancy (global by definition, so no `creator_id`):
+
+| Column | Type | Purpose |
+|---|---|---|
+| id | uuid PK | row identity |
+| key | text not null, **unique** | dot-namespaced setting name: `maintenance_mode`, `payments.mock_enabled`, `sweep.interval` |
+| category | varchar(50) not null | groups related settings for administration and filtering: `payments`, `telegram`, `storage`, `jobs`, `maintenance`. Allowed values Zod-validated in the application layer; varchar keeps it extensible without migration. |
+| value | jsonb not null | the setting value; jsonb so booleans, numbers, and structured values share one column. **Zod-validated on read** (ADR-013) — an invalid value fails loudly at the reading service, never silently. |
+| description | text null | operator-facing note on what the switch does and its safe values — the table documents itself |
+| updated_by | uuid FK → users, null | which authenticated user last changed the setting — future admin-dashboard provenance, modeled now to avoid a later migration. **NULL for system-generated changes and throughout MVP** (no admin UX exists yet). |
+| updated_at | timestamptz not null default now() | last change; settings are updated in place (no status lifecycle, so no other timestamps needed) |
+
+Notes: written by SettingsRepository (manual in MVP — no admin UX). Env vars remain the boot-time configuration (SETUP.md); `system_settings` holds *runtime-flippable* platform switches. MVP reads them at boot (cached-at-boot is debt #4 with trigger "dashboard live-edit"). Seed provides `maintenance_mode=false` (category `maintenance`) and `payments.mock_enabled=true` (category `payments`), both with `updated_by=NULL`.
 
 ## Data ownership (sole writers)
 

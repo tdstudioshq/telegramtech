@@ -4,18 +4,18 @@
 
 ### M0 — Foundation & revision ✅
 - [x] Session 1 architecture + Session 2 revision (platform-centric, ports for payment/content/cache, domain events, jobs layer, multi-tenant schema)
-- [ ] **Gate: Tyler approves revised schema (DATABASE.md rev 2) + SYSTEM_ARCHITECTURE.md** ← blocks all code
+- [x] **Gate: Tyler approves revised schema (DATABASE.md rev 2) + SYSTEM_ARCHITECTURE.md** — approved 2026-07-04
 
-### M1 — Skeleton, config, CI (Q5: CI immediately)
-- [ ] Repo scaffold: strict tsconfig, ESLint (incl. `import/no-restricted-paths` boundary rules), Prettier, Vitest, pnpm
-- [ ] `.github/workflows/ci.yml`: typecheck + lint + unit tests on push/PR
-- [ ] `config/env.ts` Zod parse-or-crash (+ tests) · Pino logger + redaction · `shared/` Result, AppError, domain types
-- [ ] Domain event dispatcher (+ tests: after-commit ordering, handler isolation)
+### M1 — Skeleton, config, CI (Q5: CI immediately) ✅ (Session 3, 2026-07-04)
+- [x] Repo scaffold: strict tsconfig, ESLint (incl. `import/no-restricted-paths` boundary rules), Prettier, Vitest, pnpm
+- [x] `.github/workflows/ci.yml`: typecheck + lint + unit tests on push/PR
+- [x] `config/env.ts` Zod parse-or-crash (+ tests) · Pino logger + redaction · `shared/` Result, AppError, domain types
+- [x] Domain event dispatcher (+ tests: after-commit ordering, handler isolation)
 
-### M2 — Data layer
-- [ ] Drizzle schema exactly per DATABASE.md rev 2 → generate migration → **stop for review** → apply
-- [ ] Unit-of-work/tx helper · repositories + integration tests (idempotency unique, one-active-sub, one-live-grant, entitlement predicate)
-- [ ] Idempotent seed: creator, one Premium plan, drops of all three access types, settings
+### M2 — Data layer (Session 4 — code complete; Supabase apply blocked on credentials)
+- [ ] Drizzle schema exactly per DATABASE.md rev 2.2 → generate migration → **stop for review** ✅ → migration review **approved 2026-07-04** → apply: ✅ validated on local Postgres 17 (Docker) · ⬜ dev Supabase apply blocked — needs DATABASE_DIRECT_URL (db password) in .env
+- [x] Unit-of-work/tx helper · repositories + integration tests (idempotency unique, one-active-sub, one-live-grant, entitlement predicate) — 13 integration tests green vs local PG17
+- [x] Idempotent seed: creator, one Premium plan, drops of all three access types, settings (re-run proven a no-op by test)
 
 ### M3 — Ports, providers, core services
 - [ ] Ports: PaymentProvider, ContentProvider, ContentTransport, CacheProvider, Notifier, Clock

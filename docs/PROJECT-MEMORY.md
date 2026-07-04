@@ -3,8 +3,14 @@
 > Cross-session handoff. Read first every session; update before ending any session.
 
 ## Current state
-- **Session 2 complete (Architecture Revision).** Platform-centric reframe applied: core business engine + adapters; Telegram = first client. **Zero implementation code.**
-- **Blocking gate:** Tyler approves DATABASE.md rev 2 + SYSTEM_ARCHITECTURE.md → then Session 3 starts M1.
+- **Session 3 complete (2026-07-04): M1 implemented.** Gate was approved by Tyler; architecture docs are frozen source of truth.
+- Delivered: pnpm/strict-tsconfig/ESLint(boundary zones)/Prettier/Vitest scaffold · CI workflow (typecheck→lint→unit) · `config/env.ts` Zod parse-or-crash + tests · Pino logger with redaction · `shared/` (Result, AppError, domain enums/ids) · `core/events` (typed events + after-commit dispatcher + EventBuffer) + tests. 25 unit tests green; boundary rules verified to fail on deliberate violations; parse-or-crash and redaction verified at runtime.
+- Toolchain notes: ESLint pinned to v9 (eslint-plugin-import lacks v10 peer support); local Node is 26, `.nvmrc`/CI pin 22; deps: zod 4, pino 10, vitest 4, typescript 6.
+- Conventions set in M1: ESM (`"type": "module"`, NodeNext, `.js` import specifiers) · `EventBuffer.drain()` after commit → `dispatcher.dispatchAll()` (rollback = never drain) · dispatcher takes a minimal `DispatcherLogger` via constructor (core stays logging-free) · Prettier never touches docs/README (frozen).
+- **Session 4 (2026-07-04): M2 first half done.** DATABASE.md rev 2.2 approved. Added drizzle-orm/postgres/drizzle-kit · schema in `src/adapters/persistence/db/schema/` (12 physical tables — §11 holds two settings tables — 11 Postgres enums mirrored 1:1 from shared/domain with a drift-guard unit test) · migration `0000_right_katie_power.sql` generated, re-generate confirms no drift. 51 unit tests green. **STOPPED at the documented review point — migration NOT applied.** Interpretation flagged for Tyler: drop_assets storage_bucket/storage_path made nullable because the §4 CHECK ("text ⇒ text_content; media ⇒ storage path") contradicts their not-null annotation; CHECK enforces shape per content_type. bot_settings uses native `UNIQUE NULLS NOT DISTINCT` (PG15+) for the documented "coalesced unique index" intent. BRIN on audit_logs.created_at deliberately omitted (doc says "at volume").
+- **Session 4 second half (2026-07-04): M2 code complete.** Migration review approved (drop_assets nullable-storage ruling confirmed). Built: repository interfaces in `core/repositories` + Drizzle impls in `adapters/persistence/repositories` · DrizzleUnitOfWork (tx-bound repos + EventBuffer drained strictly after commit; rollback never dispatches — proven by test) · idempotent seed (`runSeed` + `db:seed` CLI, deterministic 5eed… uuids, ON CONFLICT DO NOTHING) · 13 integration tests green against local Postgres 17 (Docker, port 54329): idempotency unique, one-active-sub, one-live-grant, entitlement predicate (strict `>` at expiry boundary), uow atomicity, seed idempotency. Migration `0000` applies cleanly via drizzle migrator on PG17.
+- **UNBLOCKED (2026-07-04): dev Supabase fully credentialed.** `.env` complete: DATABASE_URL (pooler `aws-1-us-west-2.pooler.supabase.com:6543`, user `postgres.cfjrxassteeevkrodttj`) + DATABASE_DIRECT_URL both verified with live queries (PG 17.6) · SUPABASE_SERVICE_ROLE_KEY (legacy service_role JWT via `supabase projects api-keys`) verified against Storage API · private bucket `drops` created and confirmed · dev BOT_TOKEN verified via getMe (@Cabanatelebot "CABANABOT"). Note: db password + bot token passed through chat — rotate before anything real. `supabase link` ran; `supabase/.temp/` gitignored. Tyler ran `pnpm db:migrate` + `pnpm db:seed` successfully.
+- **M2 COMPLETE — closeout verified (2026-07-04):** dev Supabase has all 12 tables + 11 public enums + 1 recorded migration · seed present (Demo Creator `5eed…0002`, 1 user, 1 plan, 3 drops/assets, bot+system settings; transactional tables empty as expected) · `drops` bucket private · typecheck ✓ lint ✓ 51 unit ✓ 13 integration ✓ (local PG17 Docker). Nothing committed yet beyond the initial docs commit — full M1+M2 tree is uncommitted. **Next session: M3.** Do not start M3 without Tyler.
 
 ## Decisions locked this session (do not re-litigate)
 - Q1: Supabase Storage is content source of truth (private bucket, signed URLs); telegram file_id only as rebuildable `transport_cache`.
@@ -30,14 +36,22 @@
 ## File map (docs/)
 SYSTEM_ARCHITECTURE.md (authoritative; supersedes ARCHITECTURE.md) · DATABASE.md rev 2 (11 tables) · ARCHITECTURE_DECISIONS.md ADR-001..018 (supersedes DECISIONS.md) · SETUP.md rev 2 · ROADMAP.md rev 2 (M0–M6, 12 debts) · README.md · this file.
 
-## Session 3 plan (= M1, on approval)
-1. Scaffold: pnpm, strict tsconfig, ESLint boundary rules (import/no-restricted-paths mirroring the dependency graph), Prettier, Vitest.
-2. CI workflow (typecheck/lint/unit).
-3. config/env.ts (Zod, parse-or-crash) + tests · logging/logger.ts (Pino, redaction) · shared/ (Result, AppError, domain types).
-4. core/events dispatcher + tests (after-commit ordering, handler isolation).
-5. STOP. Review before M2 (schema → migration → review → repositories).
+## Session 3 plan (= M1, on approval) — DONE ✅
+1. ~~Scaffold: pnpm, strict tsconfig, ESLint boundary rules (import/no-restricted-paths mirroring the dependency graph), Prettier, Vitest.~~
+2. ~~CI workflow (typecheck/lint/unit).~~
+3. ~~config/env.ts (Zod, parse-or-crash) + tests · logging/logger.ts (Pino, redaction) · shared/ (Result, AppError, domain types).~~
+4. ~~core/events dispatcher + tests (after-commit ordering, handler isolation).~~
+5. STOP. Review before M2 (schema → migration → review → repositories). ← **we are here**
+
+## Session 4 plan (= M2, on M1 approval)
+1. Drizzle + drizzle-kit deps · `drizzle.config.ts` · schema exactly per DATABASE.md rev 2.
+2. Generate migration → **STOP for human review** → apply via DATABASE_DIRECT_URL.
+3. Unit-of-work/tx helper (drains EventBuffer into dispatcher after commit) · repositories + integration tests.
+4. Idempotent seed (creator, Premium plan, drops of all three access types, settings).
+Note: the "As S1" column gaps are resolved — DATABASE.md rev 2.2 (2026-07-04) fully specifies audit_logs and system_settings inline (rev 2.1 approved by Tyler with revisions: varchar not enum for action/entity_type, system_settings category + updated_by, AuditRepository append-only contract). Rev 2.2 awaits Tyler's go-ahead before schema/migration generation.
 
 ## Open items for Tyler
-- Approve DATABASE.md rev 2 (esp. drop_assets, ADR-011 simplification, grant_type losing 'subscription').
-- Confirm working name: repo "creator-platform"? (docs use it; cosmetic).
+- ~~Approve DATABASE.md rev 2~~ — **approved 2026-07-04**; review M1 output next.
+- Confirm working name: repo "creator-platform"? (docs use it; cosmetic — package.json uses creator-platform, dir is telegramtech).
 - Supabase: confirm a dev project + private `drops` bucket exist before M2.
+- ~~Spec the exact audit_logs + system_settings columns~~ — done; rev 2.1 approved with revisions, applied as rev 2.2 (2026-07-04). **Confirm rev 2.2 → M2 (Drizzle schema + migration generation) may begin.**

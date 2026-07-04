@@ -70,3 +70,27 @@ Rules: `.env` gitignored; `.env.example` is the config documentation; prod value
 - **Event tests:** after-commit dispatch ordering; a throwing handler never fails the request; handler idempotency.
 - **Expiration:** always FakeClock, never sleeps.
 - **Not in MVP:** live-bot e2e (manual QA checklist in ROADMAP).
+
+## Supabase one-time setup (added Session 4 — M2)
+
+**Credentials → `.env`** (project → Settings):
+- `DATABASE_URL` — Settings → Database → Connection string → *Transaction pooler*, port **6543** (runtime; `prepare:false` is set in code).
+- `DATABASE_DIRECT_URL` — same page, *Direct connection*, port **5432** (migrations only). Both require the database password.
+- `SUPABASE_SERVICE_ROLE_KEY` — Settings → API → the **secret** key (`sb_secret_…`/service_role). The publishable/anon key is client-side and is never used by this app.
+
+**Private `drops` bucket** (bucket creation is manual — do once per project):
+- Dashboard: Storage → *New bucket* → name `drops` → **Public bucket OFF** → create. — or —
+- SQL editor: `insert into storage.buckets (id, name, public) values ('drops', 'drops', false) on conflict (id) do nothing;`
+- Verify: Storage page lists `drops` with a lock (private) badge.
+
+**Apply migrations + seed** (after human review of the SQL in `src/adapters/persistence/db/migrations/`):
+```bash
+pnpm db:migrate   # uses DATABASE_DIRECT_URL
+pnpm db:seed      # idempotent; uses DATABASE_URL
+```
+
+**Integration tests locally** (real Postgres via Docker; never point them at a shared DB — global setup DROPS the schema):
+```bash
+docker run -d --name creator-platform-test-pg -e POSTGRES_PASSWORD=postgres -p 54329:5432 postgres:17
+TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:54329/postgres pnpm test:integration
+```
