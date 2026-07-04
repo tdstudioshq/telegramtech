@@ -12,6 +12,8 @@ export type DbSession = DbClient | Parameters<Parameters<DbClient['transaction']
 
 export interface Database {
   db: DbClient;
+  /** Liveness probe for the health endpoint — a trivial round-trip to the pooler. */
+  ping: () => Promise<void>;
   /** Close the underlying connection pool (jobs/tests teardown). */
   close: () => Promise<void>;
 }
@@ -20,6 +22,9 @@ export const createDatabase = (connectionString: string): Database => {
   const client = postgres(connectionString, { prepare: false });
   return {
     db: drizzle(client, { schema }),
+    ping: async () => {
+      await client`select 1`;
+    },
     close: () => client.end(),
   };
 };

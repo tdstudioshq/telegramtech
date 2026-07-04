@@ -67,6 +67,15 @@ const envSchema = z
         });
       }
     }
+    // Production is webhook-only (ADR-017/ADR-020): long-polling is a dev convenience
+    // and cannot fast-ack Telegram's retries or verify a secret token.
+    if (env.NODE_ENV === 'production' && env.BOT_MODE !== 'webhook') {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['BOT_MODE'],
+        message: 'must be webhook when NODE_ENV=production (polling is dev-only)',
+      });
+    }
   });
 
 export type Env = z.infer<typeof envSchema>;

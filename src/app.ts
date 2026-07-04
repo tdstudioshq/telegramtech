@@ -12,12 +12,20 @@ import { DrizzleUnitOfWork } from './adapters/persistence/db/unit-of-work.js';
 import {
   configureTelegramBot,
   createTelegramBot,
-  launchTelegramBot,
+  createTelegramWebhookHandler,
+  deleteTelegramWebhook,
+  registerTelegramWebhook,
+  startTelegramPolling,
   type TelegramBotConfig,
 } from './adapters/telegram/bot.js';
 import { TelegramContentTransport } from './adapters/telegram/telegram-content-transport.js';
 import { TelegramNotifier } from './adapters/telegram/telegram-notifier.js';
-import { SUBSCRIPTION_SWEEP_BATCH, STALE_PAYMENT_BATCH } from './config/constants.js';
+import {
+  APP_VERSION,
+  HEALTH_PATH,
+  SUBSCRIPTION_SWEEP_BATCH,
+  STALE_PAYMENT_BATCH,
+} from './config/constants.js';
 import type { Env } from './config/env.js';
 import { DeliveryEngine } from './core/engines/delivery.engine.js';
 import { NotificationEngine } from './core/engines/notification.engine.js';
@@ -44,8 +52,10 @@ import { createAnalyticsJob } from './jobs/analytics.job.js';
 import { createCleanupJob } from './jobs/cleanup.job.js';
 import { createNotificationJob } from './jobs/notification.job.js';
 import { createSubscriptionExpirationJob } from './jobs/subscription-expiration.job.js';
-import { Scheduler } from './jobs/scheduler.js';
+import { Scheduler, loggingJobMetrics } from './jobs/scheduler.js';
 import type { Logger } from './logging/logger.js';
+import { createHealthCheck } from './server/health.js';
+import { HttpServer, type WebhookRoute } from './server/http-server.js';
 
 export interface Application {
   start(): Promise<void>;
@@ -119,33 +129,68 @@ export const createApplication = (env: Env, logger: Logger): Application => {
     logger: logger.child({ module: 'telegram' }),
   });
 
+  const isWebhook = env.BOT_MODE === 'webhook';
+  // In webhook mode the update handler is built synchronously (no network) and mounted
+  // on our HTTP server; setWebhook runs later, once the server is listening.
+  const webhookRoute: WebhookRoute | undefined = isWebhook
+    ? { path: new URL(requireWebhookUrl(env)).pathname, handler: createTelegramWebhookHandler(bot, botConfig) }
+    : undefined;
+  const httpServer = new HttpServer(
+    { port: env.PORT, healthPath: HEALTH_PATH, webhook: webhookRoute },
+    createHealthCheck({ database, version: APP_VERSION }),
+    logger.child({ module: 'http' }),
+  );
+
   let started = false;
   return {
     async start(): Promise<void> {
       started = true;
       try {
-        // Arm the job timers first: in polling mode launchTelegramBot blocks until
-        // the bot stops, so anything after it would never run. The scheduler start
-        // is non-blocking and the jobs don't depend on the bot being launched.
+        // Fail fast if the database is unreachable — nothing downstream can work.
+        await database.ping();
+        logger.info('database reachable');
+        // Health endpoint + (webhook mode) the update route must be live before we
+        // tell Telegram to POST. The scheduler is armed before the polling launch,
+        // which blocks until shutdown (jobs don't depend on the bot being up).
+        await httpServer.start();
         scheduler.start();
-        await launchTelegramBot(bot, botConfig);
+        if (isWebhook) {
+          await registerTelegramWebhook(bot, botConfig);
+          logger.info('webhook registered — accepting updates');
+        } else {
+          await startTelegramPolling(bot); // blocks until the bot stops
+        }
       } catch (error) {
         started = false;
         await scheduler.stop();
+        await httpServer.stop();
         throw error;
       }
     },
     async stop(reason: string): Promise<void> {
-      if (started) {
+      // Stop accepting inbound requests first, then quiesce the bot, drain in-flight
+      // jobs, and finally close the pool so no transaction is severed mid-flight.
+      await httpServer.stop();
+      if (isWebhook) {
+        await deleteTelegramWebhook(bot).catch((err: unknown) =>
+          logger.warn({ err }, 'failed to delete webhook on shutdown (ignored)'),
+        );
+      } else if (started) {
         bot.stop(reason);
-        started = false;
       }
-      // stop the scheduler (awaiting in-flight runs) before closing the pool so no
-      // job transaction is severed mid-flight.
+      started = false;
       await scheduler.stop();
       await database.close();
     },
   };
+};
+
+/** WEBHOOK_URL is guaranteed present in webhook mode by env validation; guard defensively. */
+const requireWebhookUrl = (env: Env): string => {
+  if (env.WEBHOOK_URL === undefined) {
+    throw new Error('WEBHOOK_URL is required in webhook mode (env validation should have caught this)');
+  }
+  return env.WEBHOOK_URL;
 };
 
 const MINUTE_MS = 60_000;
@@ -159,7 +204,8 @@ const buildScheduler = (
   notifications: NotificationEngine,
   purchases: PurchaseService,
 ): Scheduler => {
-  const scheduler = new Scheduler(cache, logger.child({ module: 'jobs' }));
+  const jobLogger = logger.child({ module: 'jobs' });
+  const scheduler = new Scheduler(cache, jobLogger, loggingJobMetrics(jobLogger));
   scheduler.register(
     createSubscriptionExpirationJob(subscriptions, {
       intervalMs: env.JOB_SUBSCRIPTION_SWEEP_INTERVAL * MINUTE_MS,

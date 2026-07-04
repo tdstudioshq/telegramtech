@@ -98,4 +98,22 @@ describe('parseEnv', () => {
     });
     expect(result.ok).toBe(true);
   });
+
+  it('rejects production with polling (webhook-only in prod, ADR-020)', () => {
+    const result = parseEnv({ ...validEnv, NODE_ENV: 'production', BOT_MODE: 'polling' });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.map((issue) => issue.key)).toContain('BOT_MODE');
+  });
+
+  it('accepts production in webhook mode with webhook values present', () => {
+    const result = parseEnv({
+      ...validEnv,
+      NODE_ENV: 'production',
+      BOT_MODE: 'webhook',
+      WEBHOOK_URL: 'https://bot.example.com/telegram/webhook',
+      WEBHOOK_SECRET_TOKEN: 'secret',
+    });
+    expect(result.ok).toBe(true);
+  });
 });

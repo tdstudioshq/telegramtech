@@ -16,6 +16,15 @@ import { randomUUID } from 'node:crypto';
 import type { CacheProvider } from '../core/ports/cache-provider.port.js';
 import type { Logger } from '../logging/logger.js';
 
+/**
+ * Metrics sink that emits one structured line per job run (M6 monitoring hook).
+ * Machine-parseable (`metric: 'job.run'`) so a log drain can chart job throughput
+ * and failures without a metrics backend yet — swap for StatsD/Prometheus later.
+ */
+export const loggingJobMetrics = (logger: Logger): JobMetrics => ({
+  record: (sample) => logger.info({ metric: 'job.run', ...sample }, 'job metric'),
+});
+
 /** A job's per-run result. `processed` is the headline count for run logs/metrics. */
 export interface JobRunStats {
   readonly processed: number;

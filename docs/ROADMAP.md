@@ -37,9 +37,12 @@
 - [x] Wired in app.ts (scheduler starts before the blocking bot.launch, stops before pool close); 161 unit + 25 integration tests · typecheck/lint/build green
 - [ ] Deferred (debt #13): cleanup.job orphaned-storage / transport_cache pruning — needs a ContentProvider list capability + expiry metadata (schema/port change, out of M5 scope)
 
-### M6 — Hardening & deploy
-- [ ] Rate-limit tuning · error-message audit · manual QA checklist end-to-end (all three access types, payment failure path, expiry + renew)
-- [ ] Railway deploy, secrets, log review · tag v0.1.0-mvp
+### M6 — Hardening & deploy ✅ (Session 8, 2026-07-04)
+- [x] Production boot: fail-fast DB ping, secret-free startup diagnostics, structured logging, graceful shutdown (force-timeout, uncaught/unhandled handlers)
+- [x] Health endpoint (`GET /health`, DB liveness → 200/503) on a single HTTP server shared with the webhook route; webhook mode + polling-disabled-in-production enforced by env validation (ADR-020)
+- [x] Railway config (`railway.json`, single replica, healthcheck-gated), `docs/DEPLOYMENT.md`, `docs/LAUNCH_CHECKLIST.md` (security review + manual QA), monitoring hook (`loggingJobMetrics`)
+- [x] Verified: 172 unit + 25 integration + compiled-artifact e2e (health 200/404/503, env parse-or-crash, prod-webhook enforcement, full boot sequence); typecheck/lint/build green
+- [ ] Remaining (owner action): apply prod migrations, set Railway secrets, deploy + smoke per LAUNCH_CHECKLIST, tag `v0.1.0-mvp`
 
 **MVP definition of done:** fresh user registers, browses free/premium/pay-per-unlock drops, mock-purchases an unlock (including a forced failure retry), receives storage-backed protected content, buys Premium, accesses premium drops, is expired by the sweep, gets a renew notification — all audited, all events firing, zero business logic in the adapter.
 

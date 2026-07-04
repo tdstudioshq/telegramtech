@@ -131,3 +131,12 @@ GitHub Actions on push/PR: `pnpm typecheck && pnpm lint && pnpm test` (unit). In
 **Why.** The event's meaning is that a user actually received previously-locked content. Purchase success ≠ delivery success (transport can fail); tying the event to delivery keeps handlers (analytics, enrichment) honest about what happened. First-delivery-only preserves signal for free/premium drops too, where no purchase precedes delivery.
 **Trade-offs.** First-delivery detection reads the audit log (an extra indexed query per delivery); concurrent first deliveries could double-emit — handlers are idempotent by contract, accepted.
 **Future.** If the audit-log read becomes hot, materialize a delivery ledger; the event contract doesn't change.
+
+
+## ADR-020 — Single HTTP server for health + webhook; production is webhook-only
+
+**Decision.** One Node `http` server (composition zone, `src/server/http-server.ts`) binds `PORT` and serves both `GET /health` (Railway probe; 200 ok / 503 degraded, backed by a DB `select 1` liveness check) and, in webhook mode, the Telegram update route (telegraf `webhookCallback`, secret-token verified). The server starts listening BEFORE `setWebhook`, so Telegram never POSTs to a closed socket. `NODE_ENV=production` requires `BOT_MODE=webhook` (env parse-or-crash) — long-polling is a dev-only convenience. Deployed on Railway pinned to a single replica.
+**Alternatives.** Telegraf's built-in webhook server (no room for a health route on the same port); a second HTTP server/port for health (Railway health checks one port; more moving parts); a separate sidecar for health (overkill pre-scale).
+**Why.** Railway needs a health path to gate deploys and restart wedged instances; the webhook already needs an HTTP listener; one server on one port is the least machinery. Webhook-in-production is required for fast-ack + secret-token verification before real Stars (ADR-017); enforcing it in env validation makes a mis-deploy crash at boot rather than silently long-poll.
+**Trade-offs.** Single replica only (MemoryCacheProvider rate limits + advisory job locks are per-process — debt #1/#5); horizontal scale waits on RedisCacheProvider. Health check adds one trivial query per probe.
+**Future.** Redis-backed cache/locks unpin the replica count; a readiness vs liveness split and richer checks (storage, Telegram API) land if operational signal demands it.
