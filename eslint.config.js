@@ -18,6 +18,11 @@ export default tseslint.config(
       },
     },
     rules: {
+      // `_`-prefixed params are deliberate no-ops (interface-conforming stubs like NoopCache).
+      '@typescript-eslint/no-unused-vars': [
+        'error',
+        { argsIgnorePattern: '^_', varsIgnorePattern: '^_' },
+      ],
       // Rule 5 (docs/SYSTEM_ARCHITECTURE.md §3): process.env is read only in config/env.ts.
       'no-restricted-syntax': [
         'error',

@@ -12,17 +12,18 @@
 - [x] `config/env.ts` Zod parse-or-crash (+ tests) · Pino logger + redaction · `shared/` Result, AppError, domain types
 - [x] Domain event dispatcher (+ tests: after-commit ordering, handler isolation)
 
-### M2 — Data layer (Session 4 — code complete; Supabase apply blocked on credentials)
-- [ ] Drizzle schema exactly per DATABASE.md rev 2.2 → generate migration → **stop for review** ✅ → migration review **approved 2026-07-04** → apply: ✅ validated on local Postgres 17 (Docker) · ⬜ dev Supabase apply blocked — needs DATABASE_DIRECT_URL (db password) in .env
+### M2 — Data layer ✅ (Session 4; dev Supabase applied + seeded 2026-07-04)
+- [x] Drizzle schema exactly per DATABASE.md rev 2.2 → generate migration → **stop for review** ✅ → migration review **approved 2026-07-04** → apply: ✅ validated on local Postgres 17 (Docker) · ✅ applied + seeded on dev Supabase (Tyler ran db:migrate/db:seed; closeout verified)
 - [x] Unit-of-work/tx helper · repositories + integration tests (idempotency unique, one-active-sub, one-live-grant, entitlement predicate) — 13 integration tests green vs local PG17
 - [x] Idempotent seed: creator, one Premium plan, drops of all three access types, settings (re-run proven a no-op by test)
 
-### M3 — Ports, providers, core services
-- [ ] Ports: PaymentProvider, ContentProvider, ContentTransport, CacheProvider, Notifier, Clock
-- [ ] MockPaymentProvider (delay + failure rate, Q4) · SupabaseStorageProvider (private bucket, signed URLs) · MemoryCacheProvider + Noop
-- [ ] User/Creator/Drop/Access services (+ unit tests incl. all three access types)
-- [ ] PurchaseService state machine + events (+ failure-path tests) · SubscriptionService (subscribe/renew/expireLapsed, fake clock)
-- [ ] AuditService in-transaction; event handlers (notification intents, audit enrichment, analytics no-op)
+### M3 — Ports, providers, core services ✅ (Session 5, 2026-07-04)
+- [x] Ports: PaymentProvider, ContentProvider, ContentTransport, CacheProvider, Notifier, Clock
+- [x] MockPaymentProvider (delay + failure rate, Q4) · SupabaseStorageProvider (private bucket, signed URLs) · MemoryCacheProvider + Noop
+- [x] User/Creator/Drop/Access services (+ unit tests incl. all three access types)
+- [x] PurchaseService state machine + events (+ failure-path tests) · SubscriptionService (subscribe/renew/expireLapsed, fake clock)
+- [x] AuditService in-transaction; event handlers (notification intents, audit enrichment, analytics no-op)
+- [x] Also delivered (core-layer completeness): DeliveryEngine + NotificationEngine (§1 engines — port-only, unit-tested; Telegram transport/notifier remain M4)
 
 ### M4 — Telegram adapter
 - [ ] Telegraf factory (mode from config) · middleware chain (correlation→log→rate-limit(CacheProvider)→auth→error)

@@ -2,7 +2,7 @@
  * Drizzle repository implementations (ADR-009) — the ONLY layer that touches
  * Drizzle. SQL in, domain types out; tenant filters per ADR-012.
  */
-import { and, desc, eq, gt, isNull, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, isNull, lte, sql } from 'drizzle-orm';
 import type {
   AccessGrantRepository,
   AuditRepository,
@@ -47,6 +47,7 @@ import type {
   GrantId,
   PaymentId,
   PurchaseId,
+  SubscriptionId,
   UserId,
 } from '../../../shared/domain.js';
 import type { DbSession } from '../db/client.js';
@@ -89,6 +90,13 @@ export class DrizzleUserRepository implements UserRepository {
       await this.db.select().from(users).where(eq(users.telegramId, telegramId)).limit(1),
     );
   }
+
+  async setBlocked(id: UserId, isBlocked: boolean): Promise<void> {
+    await this.db
+      .update(users)
+      .set({ isBlocked, updatedAt: sql`now()` })
+      .where(eq(users.id, id));
+  }
 }
 
 export class DrizzleCreatorRepository implements CreatorRepository {
@@ -129,6 +137,16 @@ export class DrizzleDropRepository implements DropRepository {
       .from(drops)
       .where(and(eq(drops.creatorId, creatorId), eq(drops.status, 'published')))
       .orderBy(desc(drops.publishedAt));
+  }
+
+  async publish(id: DropId, at: Date): Promise<Drop> {
+    return one(
+      await this.db
+        .update(drops)
+        .set({ status: 'published', publishedAt: at, updatedAt: sql`now()` })
+        .where(eq(drops.id, id))
+        .returning(),
+    );
   }
 
   async addAsset(asset: NewDropAsset): Promise<DropAsset> {
@@ -201,6 +219,54 @@ export class DrizzleSubscriptionRepository implements SubscriptionRepository {
       .limit(1);
     return rows.length > 0;
   }
+
+  async findActiveForUserAndCreator(
+    userId: UserId,
+    creatorId: CreatorId,
+  ): Promise<Subscription | null> {
+    return first(
+      await this.db
+        .select()
+        .from(subscriptions)
+        .where(
+          and(
+            eq(subscriptions.userId, userId),
+            eq(subscriptions.creatorId, creatorId),
+            eq(subscriptions.status, 'active'),
+          ),
+        )
+        .limit(1),
+    );
+  }
+
+  async renew(id: SubscriptionId, newExpiresAt: Date): Promise<Subscription> {
+    return one(
+      await this.db
+        .update(subscriptions)
+        .set({ expiresAt: newExpiresAt, updatedAt: sql`now()` })
+        .where(and(eq(subscriptions.id, id), eq(subscriptions.status, 'active')))
+        .returning(),
+    );
+  }
+
+  async listLapsed(at: Date, limit: number): Promise<Subscription[]> {
+    return this.db
+      .select()
+      .from(subscriptions)
+      .where(and(eq(subscriptions.status, 'active'), lte(subscriptions.expiresAt, at)))
+      .orderBy(asc(subscriptions.expiresAt))
+      .limit(limit);
+  }
+
+  async markExpired(id: SubscriptionId): Promise<boolean> {
+    // status guard makes the sweep idempotent under overlap: second flip is a no-op
+    const updated = await this.db
+      .update(subscriptions)
+      .set({ status: 'expired', updatedAt: sql`now()` })
+      .where(and(eq(subscriptions.id, id), eq(subscriptions.status, 'active')))
+      .returning({ id: subscriptions.id });
+    return updated.length > 0;
+  }
 }
 
 export class DrizzlePaymentRepository implements PaymentRepository {
@@ -223,6 +289,30 @@ export class DrizzlePaymentRepository implements PaymentRepository {
         .limit(1),
     );
   }
+
+  async markSucceeded(
+    id: PaymentId,
+    providerChargeId: string,
+    rawPayload: unknown,
+  ): Promise<Payment> {
+    return one(
+      await this.db
+        .update(payments)
+        .set({ status: 'succeeded', providerChargeId, rawPayload, updatedAt: sql`now()` })
+        .where(eq(payments.id, id))
+        .returning(),
+    );
+  }
+
+  async markFailed(id: PaymentId, rawPayload: unknown): Promise<Payment> {
+    return one(
+      await this.db
+        .update(payments)
+        .set({ status: 'failed', rawPayload, updatedAt: sql`now()` })
+        .where(eq(payments.id, id))
+        .returning(),
+    );
+  }
 }
 
 export class DrizzlePurchaseRepository implements PurchaseRepository {
@@ -236,12 +326,38 @@ export class DrizzlePurchaseRepository implements PurchaseRepository {
     return first(await this.db.select().from(purchases).where(eq(purchases.id, id)).limit(1));
   }
 
+  async findByPaymentId(paymentId: PaymentId): Promise<Purchase | null> {
+    return first(
+      await this.db.select().from(purchases).where(eq(purchases.paymentId, paymentId)).limit(1),
+    );
+  }
+
   async listByUser(userId: UserId): Promise<Purchase[]> {
     return this.db
       .select()
       .from(purchases)
       .where(eq(purchases.userId, userId))
       .orderBy(desc(purchases.createdAt));
+  }
+
+  async markCompleted(id: PurchaseId): Promise<Purchase> {
+    return one(
+      await this.db
+        .update(purchases)
+        .set({ status: 'completed', updatedAt: sql`now()` })
+        .where(eq(purchases.id, id))
+        .returning(),
+    );
+  }
+
+  async markFailed(id: PurchaseId): Promise<Purchase> {
+    return one(
+      await this.db
+        .update(purchases)
+        .set({ status: 'failed', updatedAt: sql`now()` })
+        .where(eq(purchases.id, id))
+        .returning(),
+    );
   }
 }
 

@@ -37,6 +37,7 @@ import type {
   PurchaseId,
   PurchaseStatus,
   Stars,
+  SubscriptionId,
   SubscriptionStatus,
   UserId,
 } from '../../shared/domain.js';
@@ -161,6 +162,8 @@ export interface UserRepository {
   create(user: NewUser): Promise<User>;
   findById(id: UserId): Promise<User | null>;
   findByTelegramId(telegramId: bigint): Promise<User | null>;
+  /** Notification path: a `blocked` outcome flips this instead of retrying forever. */
+  setBlocked(id: UserId, isBlocked: boolean): Promise<void>;
 }
 
 export interface CreatorRepository {
@@ -173,6 +176,8 @@ export interface DropRepository {
   create(drop: NewDrop): Promise<Drop>;
   findById(id: DropId): Promise<Drop | null>;
   listPublishedByCreator(creatorId: CreatorId): Promise<Drop[]>;
+  /** draft → published, stamping published_at. Status transitions over deletion. */
+  publish(id: DropId, at: Date): Promise<Drop>;
   addAsset(asset: NewDropAsset): Promise<DropAsset>;
   listAssets(dropId: DropId): Promise<DropAsset[]>;
 }
@@ -188,18 +193,34 @@ export interface SubscriptionRepository {
   findById(id: string): Promise<Subscription | null>;
   /** THE premium entitlement predicate (ADR-011): active subscription with expires_at > at. */
   hasActiveForUserAndCreator(userId: UserId, creatorId: CreatorId, at: Date): Promise<boolean>;
+  /** The row behind the predicate — renewal needs the current expires_at to extend. */
+  findActiveForUserAndCreator(userId: UserId, creatorId: CreatorId): Promise<Subscription | null>;
+  /** Renewal: status stays active, expires_at extends (§7 self-loop). */
+  renew(id: SubscriptionId, newExpiresAt: Date): Promise<Subscription>;
+  /** Sweep input: active rows with expires_at <= at, oldest first, bounded batch. */
+  listLapsed(at: Date, limit: number): Promise<Subscription[]>;
+  /** Expiration is a single status flip (ADR-011); returns false if the row was no longer active (idempotent sweep). */
+  markExpired(id: SubscriptionId): Promise<boolean>;
 }
 
 export interface PaymentRepository {
   create(payment: NewPayment): Promise<Payment>;
   findById(id: PaymentId): Promise<Payment | null>;
   findByIdempotencyKey(idempotencyKey: string): Promise<Payment | null>;
+  /** pending → succeeded; records the provider charge id + raw payload snapshot. */
+  markSucceeded(id: PaymentId, providerChargeId: string, rawPayload: unknown): Promise<Payment>;
+  /** pending → failed; raw payload keeps the provider's failure detail. */
+  markFailed(id: PaymentId, rawPayload: unknown): Promise<Payment>;
 }
 
 export interface PurchaseRepository {
   create(purchase: NewPurchase): Promise<Purchase>;
   findById(id: PurchaseId): Promise<Purchase | null>;
+  /** 1:1 with payments — the idempotency re-entry path resolves payment → purchase. */
+  findByPaymentId(paymentId: PaymentId): Promise<Purchase | null>;
   listByUser(userId: UserId): Promise<Purchase[]>;
+  markCompleted(id: PurchaseId): Promise<Purchase>;
+  markFailed(id: PurchaseId): Promise<Purchase>;
 }
 
 export interface AccessGrantRepository {
