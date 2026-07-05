@@ -199,6 +199,7 @@ class MemoryCreatorRepository implements CreatorRepository {
       slug: creator.slug ?? null,
       bio: creator.bio ?? null,
       avatarUrl: creator.avatarUrl ?? null,
+      onboardingCompletedAt: null,
       status: creator.status,
       createdAt: now,
       updatedAt: now,
@@ -232,6 +233,14 @@ class MemoryCreatorRepository implements CreatorRepository {
     if (patch.slug !== undefined) creator.slug = patch.slug;
     if (patch.bio !== undefined) creator.bio = patch.bio;
     if (patch.avatarUrl !== undefined) creator.avatarUrl = patch.avatarUrl;
+    creator.updatedAt = this.store.clock.now();
+    return creator;
+  }
+
+  async markOnboarded(id: CreatorId, at: Date): Promise<Creator> {
+    const creator = this.store.state.creators.find((c) => c.id === id);
+    if (creator === undefined) throw new Error(`creator ${id} not found`);
+    creator.onboardingCompletedAt = at;
     creator.updatedAt = this.store.clock.now();
     return creator;
   }

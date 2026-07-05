@@ -15,6 +15,8 @@ export const creators = pgTable('creators', {
   bio: text('bio'),
   // profile (M7.1)
   avatarUrl: text('avatar_url'),
+  // self-service onboarding completion marker (M7.2); null = still onboarding
+  onboardingCompletedAt: timestamp('onboarding_completed_at', { withTimezone: true }),
   status: creatorStatusEnum('status').notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),

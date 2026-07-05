@@ -9,6 +9,7 @@ import { AnalyticsService } from '../../../../src/core/services/analytics.servic
 import { AuthService } from '../../../../src/core/services/auth.service.js';
 import { CreatorService } from '../../../../src/core/services/creator.service.js';
 import { DropService } from '../../../../src/core/services/drop.service.js';
+import { OnboardingService } from '../../../../src/core/services/onboarding.service.js';
 import { PurchaseService } from '../../../../src/core/services/purchase.service.js';
 import { SubscriptionService } from '../../../../src/core/services/subscription.service.js';
 import { createLogger } from '../../../../src/logging/logger.js';
@@ -35,6 +36,7 @@ const start = async () => {
     drops: new DropService(world.uow, world.audit, world.clock),
     subscriptions: new SubscriptionService(world.uow, purchases, world.audit, world.clock),
     analytics: new AnalyticsService(world.uow, world.clock),
+    onboarding: new OnboardingService(world.uow, world.clock),
     content: new FakeContentProvider(world.clock),
     logger,
   });
@@ -140,6 +142,39 @@ describe('API content + plans + analytics', () => {
     };
     expect(summary.publishedDrops).toBe(1);
     expect(summary.activePlans).toBe(1);
+  });
+
+  it('tracks onboarding progress and completes it', async () => {
+    const base = await start();
+    const { token } = await register(base); // register sets a slug → profile step done
+
+    const s1 = (await (await call(base, 'GET', '/api/onboarding', { token })).json()) as {
+      steps: { profile: boolean; plan: boolean; content: boolean };
+      nextStep: string | null;
+      completed: boolean;
+    };
+    expect(s1.steps.profile).toBe(true);
+    expect(s1.steps.plan).toBe(false);
+    expect(s1.nextStep).toBe('plan');
+    expect(s1.completed).toBe(false);
+
+    await call(base, 'POST', '/api/plans', { token, body: { name: 'Gold', priceStars: 500, durationDays: 30 } });
+    await call(base, 'POST', '/api/content/drops', { token, body: { title: 'D', accessType: 'free' } });
+
+    const s2 = (await (await call(base, 'GET', '/api/onboarding', { token })).json()) as {
+      steps: { profile: boolean; plan: boolean; content: boolean };
+      nextStep: string | null;
+    };
+    expect(s2.steps.plan).toBe(true);
+    expect(s2.steps.content).toBe(true);
+    expect(s2.nextStep).toBeNull();
+
+    const done = await call(base, 'POST', '/api/onboarding/complete', { token });
+    expect(done.status).toBe(200);
+    const s3 = (await (await call(base, 'GET', '/api/onboarding', { token })).json()) as {
+      completed: boolean;
+    };
+    expect(s3.completed).toBe(true);
   });
 
   it('isolates creators — one cannot see another’s drops', async () => {

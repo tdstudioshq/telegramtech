@@ -51,6 +51,7 @@ import { AuditService } from './core/services/audit.service.js';
 import { AuthService } from './core/services/auth.service.js';
 import { CreatorService } from './core/services/creator.service.js';
 import { DropService } from './core/services/drop.service.js';
+import { OnboardingService } from './core/services/onboarding.service.js';
 import { PurchaseService } from './core/services/purchase.service.js';
 import { SubscriptionService } from './core/services/subscription.service.js';
 import { UserService } from './core/services/user.service.js';
@@ -92,6 +93,7 @@ export const createApplication = (env: Env, logger: Logger): Application => {
   const purchases = new PurchaseService(uow, paymentProvider, access, audit, systemClock);
   const subscriptions = new SubscriptionService(uow, purchases, audit, systemClock);
   const analytics = new AnalyticsService(uow, systemClock);
+  const onboarding = new OnboardingService(uow, systemClock);
   const auth = new AuthService(
     uow,
     new ScryptPasswordHasher(),
@@ -157,6 +159,7 @@ export const createApplication = (env: Env, logger: Logger): Application => {
     drops,
     subscriptions,
     analytics,
+    onboarding,
     content,
     logger: logger.child({ module: 'api' }),
   });

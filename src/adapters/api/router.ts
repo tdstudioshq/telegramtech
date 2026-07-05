@@ -15,6 +15,7 @@ import type { AnalyticsService } from '../../core/services/analytics.service.js'
 import type { AuthPrincipal, AuthService, RegisterInput } from '../../core/services/auth.service.js';
 import type { CreatorService, ProfilePatchInput } from '../../core/services/creator.service.js';
 import type { DropService } from '../../core/services/drop.service.js';
+import type { OnboardingService } from '../../core/services/onboarding.service.js';
 import type { SubscriptionService } from '../../core/services/subscription.service.js';
 import type { Logger } from '../../logging/logger.js';
 import { appError } from '../../shared/app-error.js';
@@ -28,6 +29,7 @@ export interface ApiDependencies {
   readonly drops: DropService;
   readonly subscriptions: SubscriptionService;
   readonly analytics: AnalyticsService;
+  readonly onboarding: OnboardingService;
   readonly content: ContentProvider;
   readonly logger: Logger;
 }
@@ -132,6 +134,12 @@ const route = async (
   }
   if (method === 'GET' && path === '/api/analytics/summary') {
     return sendJson(res, 200, await deps.analytics.creatorSummary(principal.creatorId));
+  }
+  if (method === 'GET' && path === '/api/onboarding') {
+    return sendResult(res, await deps.onboarding.getState(principal.creatorId));
+  }
+  if (method === 'POST' && path === '/api/onboarding/complete') {
+    return sendResult(res, await deps.onboarding.complete(principal.creatorId));
   }
 
   const publish = method === 'POST' ? PUBLISH_RE.exec(path) : null;

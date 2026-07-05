@@ -48,6 +48,8 @@ export interface Creator {
   slug: string | null;
   bio: string | null;
   avatarUrl: string | null;
+  /** Set when the creator finishes self-service onboarding (M7.2); null while in progress. */
+  onboardingCompletedAt: Date | null;
   status: CreatorStatus;
   createdAt: Date;
   updatedAt: Date;

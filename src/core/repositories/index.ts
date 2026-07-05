@@ -200,6 +200,8 @@ export interface CreatorRepository {
   findBySlug(slug: string): Promise<Creator | null>;
   /** Dashboard profile edit (M7.1): patch only the provided fields, stamp updated_at. */
   update(id: CreatorId, patch: CreatorProfilePatch): Promise<Creator>;
+  /** Onboarding completion marker (M7.2). */
+  markOnboarded(id: CreatorId, at: Date): Promise<Creator>;
 }
 
 export interface CreatorIdentityRepository {

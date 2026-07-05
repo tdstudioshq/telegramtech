@@ -138,6 +138,16 @@ export class DrizzleCreatorRepository implements CreatorRepository {
         .returning(),
     );
   }
+
+  async markOnboarded(id: CreatorId, at: Date): Promise<Creator> {
+    return one(
+      await this.db
+        .update(creators)
+        .set({ onboardingCompletedAt: at, updatedAt: sql`now()` })
+        .where(eq(creators.id, id))
+        .returning(),
+    );
+  }
 }
 
 export class DrizzleCreatorIdentityRepository implements CreatorIdentityRepository {

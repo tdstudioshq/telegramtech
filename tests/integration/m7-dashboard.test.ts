@@ -71,6 +71,14 @@ describe('creators.update + analytics aggregates', () => {
     expect(updated.bio).toBe('hi');
   });
 
+  it('marks onboarding complete (M7.2 column)', async () => {
+    const { repos } = ctx;
+    const creator = await repos.creators.create({ displayName: 'Newbie', status: 'active' });
+    expect(creator.onboardingCompletedAt).toBeNull();
+    const updated = await repos.creators.markOnboarded(creator.id, new Date());
+    expect(updated.onboardingCompletedAt).not.toBeNull();
+  });
+
   it('aggregates completed sales + counts active subscribers', async () => {
     const { repos } = ctx;
     const user = await makeUser(repos);

@@ -65,6 +65,12 @@ export const runSeed = async (db: DbClient, now: () => Date = () => new Date()):
     .set({ slug: SEED_CREATOR_SLUG })
     .where(and(eq(creators.id, SEED_IDS.creator), isNull(creators.slug)));
 
+  // The demo creator ships fully set up (slug + plan + drops) — mark it onboarded (M7.2).
+  await db
+    .update(creators)
+    .set({ onboardingCompletedAt: now() })
+    .where(and(eq(creators.id, SEED_IDS.creator), isNull(creators.onboardingCompletedAt)));
+
   await db
     .insert(subscriptionPlans)
     .values({
