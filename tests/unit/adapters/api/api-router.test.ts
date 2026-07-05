@@ -8,6 +8,7 @@ import { createApiHandler } from '../../../../src/adapters/api/router.js';
 import { AnalyticsService } from '../../../../src/core/services/analytics.service.js';
 import { AuthService } from '../../../../src/core/services/auth.service.js';
 import { CreatorService } from '../../../../src/core/services/creator.service.js';
+import { DiscoveryService } from '../../../../src/core/services/discovery.service.js';
 import { DropService } from '../../../../src/core/services/drop.service.js';
 import { OnboardingService } from '../../../../src/core/services/onboarding.service.js';
 import { PurchaseService } from '../../../../src/core/services/purchase.service.js';
@@ -27,7 +28,7 @@ afterEach(async () => {
   server = null;
 });
 
-const start = async () => {
+const startWithWorld = async () => {
   const world = createWorld();
   const purchases = new PurchaseService(world.uow, new FakePaymentProvider(), world.access, world.audit, world.clock);
   const handler = createApiHandler({
@@ -37,7 +38,9 @@ const start = async () => {
     subscriptions: new SubscriptionService(world.uow, purchases, world.audit, world.clock),
     analytics: new AnalyticsService(world.uow, world.clock),
     onboarding: new OnboardingService(world.uow, world.clock),
+    discovery: new DiscoveryService(world.uow),
     content: new FakeContentProvider(world.clock),
+    botUsername: 'demo_bot',
     logger,
   });
   server = new HttpServer(
@@ -46,8 +49,10 @@ const start = async () => {
     logger,
   );
   await server.start();
-  return `http://127.0.0.1:${server.port}`;
+  return { base: `http://127.0.0.1:${server.port}`, world };
 };
+
+const start = async (): Promise<string> => (await startWithWorld()).base;
 
 interface Opts {
   token?: string;
@@ -175,6 +180,36 @@ describe('API content + plans + analytics', () => {
       completed: boolean;
     };
     expect(s3.completed).toBe(true);
+  });
+
+  it('serves the public marketplace (no auth): list/search/featured/categories/profile', async () => {
+    const { base, world } = await startWithWorld();
+    const now = world.clock.now();
+    const repos = world.store.repos;
+    const alpha = await repos.creators.create({ displayName: 'Alpha', slug: 'alpha', category: 'Music', isFeatured: true, onboardingCompletedAt: now, status: 'active' });
+    await repos.creators.create({ displayName: 'Beta', slug: 'beta', category: 'Art', onboardingCompletedAt: now, status: 'active' });
+    await repos.drops.create({ creatorId: alpha.id, title: 'Song', accessType: 'free', priceStars: null, status: 'published', publishedAt: now });
+
+    const list = (await (await call(base, 'GET', '/api/public/creators')).json()) as { creators: { slug: string }[] };
+    expect(list.creators.map((c) => c.slug)).toEqual(['alpha', 'beta']);
+
+    const search = (await (await call(base, 'GET', '/api/public/creators?query=alph')).json()) as { creators: { slug: string }[] };
+    expect(search.creators.map((c) => c.slug)).toEqual(['alpha']);
+
+    const featured = (await (await call(base, 'GET', '/api/public/creators/featured')).json()) as { creators: { slug: string }[] };
+    expect(featured.creators.map((c) => c.slug)).toEqual(['alpha']);
+
+    const cats = (await (await call(base, 'GET', '/api/public/categories')).json()) as { categories: string[] };
+    expect(cats.categories).toEqual(['Art', 'Music']);
+
+    const profileRes = await call(base, 'GET', '/api/public/creators/alpha');
+    expect(profileRes.status).toBe(200);
+    const profile = (await profileRes.json()) as { startParam: string; telegramUrl: string; drops: unknown[] };
+    expect(profile.startParam).toBe('c_alpha');
+    expect(profile.telegramUrl).toBe('https://t.me/demo_bot?start=c_alpha'); // botUsername wired
+    expect(profile.drops.length).toBe(1);
+
+    expect((await call(base, 'GET', '/api/public/creators/nope')).status).toBe(404);
   });
 
   it('isolates creators — one cannot see another’s drops', async () => {

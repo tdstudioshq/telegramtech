@@ -2,7 +2,9 @@ import type { Telegraf } from 'telegraf';
 import { z } from 'zod';
 import type { DeliveryEngine } from '../../../core/engines/delivery.engine.js';
 import type { AccessService } from '../../../core/services/access.service.js';
+import type { CreatorService } from '../../../core/services/creator.service.js';
 import type { DropService } from '../../../core/services/drop.service.js';
+import type { FollowService } from '../../../core/services/follow.service.js';
 import type { PurchaseService } from '../../../core/services/purchase.service.js';
 import type { SubscriptionService } from '../../../core/services/subscription.service.js';
 import { appError, type AppError } from '../../../shared/app-error.js';
@@ -18,11 +20,14 @@ import {
 import {
   browseHeader,
   dropDetail,
+  followSucceeded,
+  followedCreatorsView,
   help,
   myAccessView,
   purchaseSucceeded,
   subscribePrompt,
   subscribeSucceeded,
+  unfollowSucceeded,
   unlockPrompt,
   welcome,
 } from '../views/views.js';
@@ -31,10 +36,12 @@ import { parseCallbackData, type TelegramCallback } from './callback-data.js';
 export interface TelegramHandlerDependencies {
   /** Resolves which creator (storefront) an update is about — M7.0 shared-bot routing. */
   readonly creatorContext: CreatorContext;
+  readonly creators: CreatorService;
   readonly drops: DropService;
   readonly access: AccessService;
   readonly purchases: PurchaseService;
   readonly subscriptions: SubscriptionService;
+  readonly follows: FollowService;
   readonly delivery: DeliveryEngine;
 }
 
@@ -59,6 +66,15 @@ const primaryPlanId = async (
 ): Promise<PlanId | null> => {
   const plans = await deps.subscriptions.listActivePlans(creatorId);
   return plans[0]?.id ?? null;
+};
+
+/** Display name for follow replies; falls back gracefully. */
+const creatorName = async (
+  deps: TelegramHandlerDependencies,
+  creatorId: CreatorId,
+): Promise<string> => {
+  const creator = await deps.creators.getById(creatorId);
+  return creator.ok ? creator.value.displayName : 'this creator';
 };
 
 export const registerTelegramHandlers = (
@@ -150,6 +166,38 @@ export const registerTelegramHandlers = (
     );
     const active = await deps.subscriptions.hasActiveSubscription(user.id, creatorId);
     await ctx.reply(myAccessView(entries, active), html);
+  });
+
+  bot.command('follow', async (ctx) => {
+    const user = requireUser(ctx);
+    const creatorId = await currentCreatorId(ctx, deps);
+    if (creatorId === null) {
+      await ctx.reply(NO_STOREFRONT);
+      return;
+    }
+    const result = await deps.follows.follow(user.id, creatorId);
+    if (!result.ok) {
+      await replyAppError(ctx, result.error);
+      return;
+    }
+    await ctx.reply(followSucceeded(await creatorName(deps, creatorId)), html);
+  });
+
+  bot.command('unfollow', async (ctx) => {
+    const user = requireUser(ctx);
+    const creatorId = await currentCreatorId(ctx, deps);
+    if (creatorId === null) {
+      await ctx.reply(NO_STOREFRONT);
+      return;
+    }
+    await deps.follows.unfollow(user.id, creatorId);
+    await ctx.reply(unfollowSucceeded(await creatorName(deps, creatorId)), html);
+  });
+
+  bot.command('creators', async (ctx) => {
+    const user = requireUser(ctx);
+    const followed = await deps.follows.listFollowedCreators(user.id);
+    await ctx.reply(followedCreatorsView(followed), html);
   });
 
   bot.on('callback_query', async (ctx) => {

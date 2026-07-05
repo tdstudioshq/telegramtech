@@ -6,7 +6,7 @@ import { randomBytes, scrypt, timingSafeEqual } from 'node:crypto';
 import type { PasswordHasher } from '../../core/ports/password-hasher.port.js';
 
 const KEYLEN = 64;
-const COST = 16_384; // scrypt N
+const DEFAULT_COST = 16_384; // scrypt N (production)
 
 /** Promise wrapper that keeps the options overload (promisify drops it). */
 const scryptAsync = (password: string, salt: Buffer, keylen: number, cost: number): Promise<Buffer> =>
@@ -17,10 +17,13 @@ const scryptAsync = (password: string, salt: Buffer, keylen: number, cost: numbe
   });
 
 export class ScryptPasswordHasher implements PasswordHasher {
+  /** `cost` (scrypt N, power of two) is overridable so tests can hash cheaply. */
+  constructor(private readonly cost: number = DEFAULT_COST) {}
+
   async hash(plain: string): Promise<string> {
     const salt = randomBytes(16);
-    const derived = await scryptAsync(plain, salt, KEYLEN, COST);
-    return `scrypt$${COST}$${salt.toString('hex')}$${derived.toString('hex')}`;
+    const derived = await scryptAsync(plain, salt, KEYLEN, this.cost);
+    return `scrypt$${this.cost}$${salt.toString('hex')}$${derived.toString('hex')}`;
   }
 
   async verify(plain: string, hash: string): Promise<boolean> {

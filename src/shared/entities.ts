@@ -50,9 +50,21 @@ export interface Creator {
   avatarUrl: string | null;
   /** Set when the creator finishes self-service onboarding (M7.2); null while in progress. */
   onboardingCompletedAt: Date | null;
+  /** Marketplace category (M7.3), free text; null if uncategorized. */
+  category: string | null;
+  /** Editorially featured on the marketplace (M7.3). */
+  isFeatured: boolean;
   status: CreatorStatus;
   createdAt: Date;
   updatedAt: Date;
+}
+
+/** M7.3 — a Telegram user following a creator (discovery + new-drop notifications). */
+export interface Follow {
+  id: string;
+  userId: UserId;
+  creatorId: CreatorId;
+  followedAt: Date;
 }
 
 /** M7.1 — a creator's web/API login identity (distinct from a Telegram user). */

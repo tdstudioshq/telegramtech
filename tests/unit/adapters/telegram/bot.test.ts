@@ -9,6 +9,7 @@ import { NoopCacheProvider } from '../../../../src/adapters/cache/noop-cache.pro
 import { CreatorContext } from '../../../../src/adapters/telegram/creator-context.js';
 import { DeliveryEngine } from '../../../../src/core/engines/delivery.engine.js';
 import { CreatorService } from '../../../../src/core/services/creator.service.js';
+import { FollowService } from '../../../../src/core/services/follow.service.js';
 import { DropService } from '../../../../src/core/services/drop.service.js';
 import { PurchaseService } from '../../../../src/core/services/purchase.service.js';
 import { SubscriptionService } from '../../../../src/core/services/subscription.service.js';
@@ -60,11 +61,13 @@ describe('Telegram bot commands and callbacks', () => {
     const bot = createTelegramBot(config.token);
     configureTelegramBot(bot, config, {
       creatorContext,
+      creators,
       users,
       drops,
       access: world.access,
       purchases,
       subscriptions,
+      follows: new FollowService(world.uow),
       delivery,
       cache,
       logger,
@@ -86,11 +89,14 @@ describe('Telegram bot commands and callbacks', () => {
     await bot.handleUpdate(callbackUpdate(3, `u:${unlockDrop.id}`));
     await bot.handleUpdate(callbackUpdate(4, `s:${plan.id}`));
     await bot.handleUpdate(commandUpdate(5, '/my_access'));
+    await bot.handleUpdate(commandUpdate(6, '/follow'));
+    await bot.handleUpdate(commandUpdate(7, '/creators'));
 
     const user = await world.store.repos.users.findByTelegramId(42n);
     expect(user).not.toBeNull();
     expect(world.store.state.accessGrants).toHaveLength(1);
     expect(world.store.state.subscriptions).toHaveLength(1);
+    expect(world.store.state.follows).toHaveLength(1); // /follow followed the default creator
     expect(transport.sends).toHaveLength(1);
     const sentTexts = callApi.mock.calls
       .filter(([method]) => method === 'sendMessage')
@@ -99,6 +105,8 @@ describe('Telegram bot commands and callbacks', () => {
         return String(record['text']);
       });
     expect(sentTexts.some((text) => text.includes('Welcome'))).toBe(true);
+    expect(sentTexts.some((text) => text.includes('following'))).toBe(true); // /follow reply
+    expect(sentTexts.some((text) => text.includes('Creators you follow'))).toBe(true); // /creators
     expect(sentTexts.some((text) => text.includes('Available drops'))).toBe(true);
     expect(sentTexts.some((text) => text.includes('Unlocked'))).toBe(true);
     expect(sentTexts.some((text) => text.includes('Subscribed'))).toBe(true);

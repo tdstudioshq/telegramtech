@@ -55,6 +55,9 @@ const BOT_COMMANDS = [
   { command: 'unlock', description: 'Choose a drop to unlock' },
   { command: 'subscribe', description: 'View the Premium plan' },
   { command: 'my_access', description: 'Show content you can access' },
+  { command: 'follow', description: 'Follow this creator for new drops' },
+  { command: 'unfollow', description: 'Stop following this creator' },
+  { command: 'creators', description: 'Creators you follow' },
 ];
 
 /** The Telegram request handler (verifies the secret token). Pure — no network; the

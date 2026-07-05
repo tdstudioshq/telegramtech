@@ -2,7 +2,7 @@
  * Drizzle repository implementations (ADR-009) — the ONLY layer that touches
  * Drizzle. SQL in, domain types out; tenant filters per ADR-012.
  */
-import { and, asc, desc, eq, gt, isNull, lt, lte, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, ilike, isNotNull, isNull, lt, lte, or, sql } from 'drizzle-orm';
 import type {
   AccessGrantRepository,
   AuditRepository,
@@ -10,12 +10,15 @@ import type {
   CreatorProfilePatch,
   CreatorRepository,
   CreatorSalesAggregate,
+  DiscoverCreatorsQuery,
   DropRepository,
+  FollowRepository,
   NewAccessGrant,
   NewAuditEntry,
   NewCreator,
   NewCreatorIdentity,
   NewDrop,
+  NewFollow,
   NewDropAsset,
   NewPayment,
   NewPurchase,
@@ -68,6 +71,7 @@ import {
   creators,
   dropAssets,
   drops,
+  follows,
   payments,
   purchases,
   sessions,
@@ -147,6 +151,91 @@ export class DrizzleCreatorRepository implements CreatorRepository {
         .where(eq(creators.id, id))
         .returning(),
     );
+  }
+
+  async listDiscoverable(query: DiscoverCreatorsQuery): Promise<Creator[]> {
+    const filters = [discoverable()];
+    if (query.query !== undefined && query.query.trim() !== '') {
+      const pattern = `%${query.query.trim()}%`;
+      filters.push(or(ilike(creators.displayName, pattern), ilike(creators.slug, pattern)));
+    }
+    if (query.category !== undefined) filters.push(eq(creators.category, query.category));
+    return this.db
+      .select()
+      .from(creators)
+      .where(and(...filters))
+      .orderBy(desc(creators.isFeatured), desc(creators.createdAt))
+      .limit(query.limit)
+      .offset(query.offset);
+  }
+
+  async listFeatured(limit: number): Promise<Creator[]> {
+    return this.db
+      .select()
+      .from(creators)
+      .where(and(discoverable(), eq(creators.isFeatured, true)))
+      .orderBy(desc(creators.createdAt))
+      .limit(limit);
+  }
+
+  async listCategories(): Promise<string[]> {
+    const rows = await this.db
+      .selectDistinct({ category: creators.category })
+      .from(creators)
+      .where(and(discoverable(), isNotNull(creators.category)));
+    return rows
+      .map((r) => r.category)
+      .filter((c): c is string => c !== null)
+      .sort();
+  }
+}
+
+/** Marketplace-visible creators: active, with a storefront slug, onboarding complete. */
+const discoverable = () =>
+  and(
+    eq(creators.status, 'active'),
+    isNotNull(creators.slug),
+    isNotNull(creators.onboardingCompletedAt),
+  );
+
+export class DrizzleFollowRepository implements FollowRepository {
+  constructor(private readonly db: DbSession) {}
+
+  async create(follow: NewFollow): Promise<void> {
+    await this.db.insert(follows).values(follow).onConflictDoNothing();
+  }
+
+  async delete(userId: UserId, creatorId: CreatorId): Promise<void> {
+    await this.db
+      .delete(follows)
+      .where(and(eq(follows.userId, userId), eq(follows.creatorId, creatorId)));
+  }
+
+  async exists(userId: UserId, creatorId: CreatorId): Promise<boolean> {
+    const rows = await this.db
+      .select({ one: sql<number>`1` })
+      .from(follows)
+      .where(and(eq(follows.userId, userId), eq(follows.creatorId, creatorId)))
+      .limit(1);
+    return rows.length > 0;
+  }
+
+  async listCreatorsByUser(userId: UserId): Promise<Creator[]> {
+    const rows = await this.db
+      .select({ creator: creators })
+      .from(follows)
+      .innerJoin(creators, eq(follows.creatorId, creators.id))
+      .where(eq(follows.userId, userId))
+      .orderBy(desc(follows.followedAt));
+    return rows.map((r) => r.creator);
+  }
+
+  async countByCreator(creatorId: CreatorId): Promise<number> {
+    const rows = await this.db
+      .select({ n: sql<number>`count(*)::int` })
+      .from(follows)
+      .where(eq(follows.creatorId, creatorId));
+    return rows[0]?.n ?? 0;
   }
 }
 
@@ -657,6 +746,7 @@ export const buildRepositories = (db: DbSession): Repositories => ({
   creators: new DrizzleCreatorRepository(db),
   creatorIdentities: new DrizzleCreatorIdentityRepository(db),
   sessions: new DrizzleSessionRepository(db),
+  follows: new DrizzleFollowRepository(db),
   drops: new DrizzleDropRepository(db),
   plans: new DrizzleSubscriptionPlanRepository(db),
   subscriptions: new DrizzleSubscriptionRepository(db),

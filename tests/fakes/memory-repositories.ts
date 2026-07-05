@@ -13,12 +13,15 @@ import type {
   CreatorProfilePatch,
   CreatorRepository,
   CreatorSalesAggregate,
+  DiscoverCreatorsQuery,
   DropRepository,
+  FollowRepository,
   NewAccessGrant,
   NewAuditEntry,
   NewCreator,
   NewCreatorIdentity,
   NewDrop,
+  NewFollow,
   NewDropAsset,
   NewPayment,
   NewPurchase,
@@ -44,6 +47,7 @@ import type {
   CreatorIdentity,
   Drop,
   DropAsset,
+  Follow,
   Payment,
   Purchase,
   Session,
@@ -69,6 +73,7 @@ export interface StoreState {
   creators: Creator[];
   creatorIdentities: CreatorIdentity[];
   sessions: Session[];
+  follows: Follow[];
   drops: Drop[];
   dropAssets: DropAsset[];
   plans: SubscriptionPlan[];
@@ -86,6 +91,7 @@ const emptyState = (): StoreState => ({
   creators: [],
   creatorIdentities: [],
   sessions: [],
+  follows: [],
   drops: [],
   dropAssets: [],
   plans: [],
@@ -123,6 +129,7 @@ export class MemoryStore {
       creators: cloningRepo(new MemoryCreatorRepository(this)),
       creatorIdentities: cloningRepo(new MemoryCreatorIdentityRepository(this)),
       sessions: cloningRepo(new MemorySessionRepository(this)),
+      follows: cloningRepo(new MemoryFollowRepository(this)),
       drops: cloningRepo(new MemoryDropRepository(this)),
       plans: cloningRepo(new MemorySubscriptionPlanRepository(this)),
       subscriptions: cloningRepo(new MemorySubscriptionRepository(this)),
@@ -199,7 +206,9 @@ class MemoryCreatorRepository implements CreatorRepository {
       slug: creator.slug ?? null,
       bio: creator.bio ?? null,
       avatarUrl: creator.avatarUrl ?? null,
-      onboardingCompletedAt: null,
+      onboardingCompletedAt: creator.onboardingCompletedAt ?? null,
+      category: creator.category ?? null,
+      isFeatured: creator.isFeatured ?? false,
       status: creator.status,
       createdAt: now,
       updatedAt: now,
@@ -243,6 +252,92 @@ class MemoryCreatorRepository implements CreatorRepository {
     creator.onboardingCompletedAt = at;
     creator.updatedAt = this.store.clock.now();
     return creator;
+  }
+
+  private discoverable(): Creator[] {
+    return this.store.state.creators.filter(
+      (c) => c.status === 'active' && c.slug !== null && c.onboardingCompletedAt !== null,
+    );
+  }
+
+  async listDiscoverable(query: DiscoverCreatorsQuery): Promise<Creator[]> {
+    const q = query.query?.trim().toLowerCase();
+    return this.discoverable()
+      .filter((c) => {
+        if (query.category !== undefined && c.category !== query.category) return false;
+        if (q !== undefined && q !== '') {
+          return c.displayName.toLowerCase().includes(q) || (c.slug ?? '').toLowerCase().includes(q);
+        }
+        return true;
+      })
+      .sort(
+        (a, b) =>
+          Number(b.isFeatured) - Number(a.isFeatured) ||
+          b.createdAt.getTime() - a.createdAt.getTime(),
+      )
+      .slice(query.offset, query.offset + query.limit);
+  }
+
+  async listFeatured(limit: number): Promise<Creator[]> {
+    return this.discoverable()
+      .filter((c) => c.isFeatured)
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+      .slice(0, limit);
+  }
+
+  async listCategories(): Promise<string[]> {
+    return [
+      ...new Set(
+        this.discoverable()
+          .map((c) => c.category)
+          .filter((c): c is string => c !== null),
+      ),
+    ].sort();
+  }
+}
+
+class MemoryFollowRepository implements FollowRepository {
+  constructor(private readonly store: MemoryStore) {}
+
+  async create(follow: NewFollow): Promise<void> {
+    if (
+      this.store.state.follows.some(
+        (f) => f.userId === follow.userId && f.creatorId === follow.creatorId,
+      )
+    ) {
+      return; // idempotent
+    }
+    this.store.state.follows.push({
+      id: randomUUID(),
+      userId: follow.userId,
+      creatorId: follow.creatorId,
+      followedAt: this.store.clock.now(),
+    });
+  }
+
+  async delete(userId: UserId, creatorId: CreatorId): Promise<void> {
+    this.store.state.follows = this.store.state.follows.filter(
+      (f) => !(f.userId === userId && f.creatorId === creatorId),
+    );
+  }
+
+  async exists(userId: UserId, creatorId: CreatorId): Promise<boolean> {
+    return this.store.state.follows.some(
+      (f) => f.userId === userId && f.creatorId === creatorId,
+    );
+  }
+
+  async listCreatorsByUser(userId: UserId): Promise<Creator[]> {
+    const followed = this.store.state.follows
+      .filter((f) => f.userId === userId)
+      .sort((a, b) => b.followedAt.getTime() - a.followedAt.getTime());
+    return followed
+      .map((f) => this.store.state.creators.find((c) => c.id === f.creatorId))
+      .filter((c): c is Creator => c !== undefined);
+  }
+
+  async countByCreator(creatorId: CreatorId): Promise<number> {
+    return this.store.state.follows.filter((f) => f.creatorId === creatorId).length;
   }
 }
 

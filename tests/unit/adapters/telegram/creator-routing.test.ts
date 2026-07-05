@@ -15,6 +15,7 @@ import {
 import { DeliveryEngine } from '../../../../src/core/engines/delivery.engine.js';
 import { CreatorService } from '../../../../src/core/services/creator.service.js';
 import { DropService } from '../../../../src/core/services/drop.service.js';
+import { FollowService } from '../../../../src/core/services/follow.service.js';
 import { PurchaseService } from '../../../../src/core/services/purchase.service.js';
 import { SubscriptionService } from '../../../../src/core/services/subscription.service.js';
 import { UserService } from '../../../../src/core/services/user.service.js';
@@ -51,11 +52,13 @@ const buildBot = async () => {
   const bot = createTelegramBot(config.token);
   configureTelegramBot(bot, config, {
     creatorContext: new CreatorContext(cache, creators, 'alpha'),
+    creators,
     users: new UserService(world.uow, world.audit),
     drops: new DropService(world.uow, world.audit, world.clock),
     access: world.access,
     purchases,
     subscriptions: new SubscriptionService(world.uow, purchases, world.audit, world.clock),
+    follows: new FollowService(world.uow),
     delivery: new DeliveryEngine(
       world.uow,
       world.access,

@@ -8,7 +8,7 @@ import { ScryptPasswordHasher } from '../../../../src/adapters/auth/scrypt-passw
 
 describe('ScryptPasswordHasher', () => {
   it('verifies a correct password and rejects a wrong one', async () => {
-    const hasher = new ScryptPasswordHasher();
+    const hasher = new ScryptPasswordHasher(1024); // cheap cost keeps the test fast + non-flaky
     const hash = await hasher.hash('correct-horse');
     expect(hash.startsWith('scrypt$')).toBe(true);
     expect(await hasher.verify('correct-horse', hash)).toBe(true);
@@ -16,7 +16,7 @@ describe('ScryptPasswordHasher', () => {
   });
 
   it('rejects a malformed hash without throwing', async () => {
-    const hasher = new ScryptPasswordHasher();
+    const hasher = new ScryptPasswordHasher(1024); // cheap cost keeps the test fast + non-flaky
     expect(await hasher.verify('x', 'not-a-hash')).toBe(false);
     expect(await hasher.verify('x', 'scrypt$16384$$')).toBe(false);
   });

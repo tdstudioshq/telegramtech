@@ -63,7 +63,23 @@ export interface NewCreator {
   slug?: string | null;
   bio?: string | null;
   avatarUrl?: string | null;
+  category?: string | null;
+  isFeatured?: boolean;
+  onboardingCompletedAt?: Date | null;
   status: CreatorStatus;
+}
+
+export interface NewFollow {
+  userId: UserId;
+  creatorId: CreatorId;
+}
+
+/** Marketplace discovery query (M7.3) — bounded by the service, applied by the repo. */
+export interface DiscoverCreatorsQuery {
+  query?: string;
+  category?: string;
+  limit: number;
+  offset: number;
 }
 
 /** Mutable profile fields a creator edits from the dashboard (M7.1). All optional. */
@@ -202,6 +218,25 @@ export interface CreatorRepository {
   update(id: CreatorId, patch: CreatorProfilePatch): Promise<Creator>;
   /** Onboarding completion marker (M7.2). */
   markOnboarded(id: CreatorId, at: Date): Promise<Creator>;
+  /**
+   * Marketplace listing (M7.3): discoverable creators only — active, with a slug,
+   * and onboarding complete — optionally filtered by search/category, featured first.
+   */
+  listDiscoverable(query: DiscoverCreatorsQuery): Promise<Creator[]>;
+  /** Discoverable + featured creators, newest first (M7.3). */
+  listFeatured(limit: number): Promise<Creator[]>;
+  /** Distinct non-null categories among discoverable creators (M7.3). */
+  listCategories(): Promise<string[]>;
+}
+
+export interface FollowRepository {
+  /** Idempotent (unique user+creator): re-following is a no-op. */
+  create(follow: NewFollow): Promise<void>;
+  delete(userId: UserId, creatorId: CreatorId): Promise<void>;
+  exists(userId: UserId, creatorId: CreatorId): Promise<boolean>;
+  /** Creators a user follows, newest first (for /creators). */
+  listCreatorsByUser(userId: UserId): Promise<Creator[]>;
+  countByCreator(creatorId: CreatorId): Promise<number>;
 }
 
 export interface CreatorIdentityRepository {
@@ -341,6 +376,7 @@ export interface Repositories {
   creators: CreatorRepository;
   creatorIdentities: CreatorIdentityRepository;
   sessions: SessionRepository;
+  follows: FollowRepository;
   drops: DropRepository;
   plans: SubscriptionPlanRepository;
   subscriptions: SubscriptionRepository;

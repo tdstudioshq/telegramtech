@@ -135,6 +135,23 @@ export const myAccessView = (
   return lines.join('\n');
 };
 
+export const followSucceeded = (name: string): string =>
+  `✅ You're now following <b>${escapeHtml(name)}</b> — you'll hear about new drops.`;
+
+export const unfollowSucceeded = (name: string): string =>
+  `You've unfollowed <b>${escapeHtml(name)}</b>.`;
+
+export const followedCreatorsView = (
+  creators: readonly { displayName: string; slug: string | null }[],
+): string => {
+  if (creators.length === 0) return 'You aren’t following any creators yet.';
+  const lines = ['<b>Creators you follow</b>', ''];
+  for (const c of creators) {
+    lines.push(`• ${escapeHtml(c.displayName)}${c.slug ? ` (${escapeHtml(c.slug)})` : ''}`);
+  }
+  return lines.join('\n');
+};
+
 /** Media assets have no inline body; a text asset's content is sent verbatim. */
 export const isTextAsset = (asset: DropAsset): boolean => asset.contentType === 'text';
 

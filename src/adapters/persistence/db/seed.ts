@@ -54,6 +54,8 @@ export const runSeed = async (db: DbClient, now: () => Date = () => new Date()):
       displayName: 'Demo Creator',
       slug: SEED_CREATOR_SLUG,
       bio: 'Seeded MVP creator (single tenant until SaaS onboarding).',
+      category: 'Demo',
+      isFeatured: true,
       status: 'active',
     })
     .onConflictDoNothing();
@@ -70,6 +72,12 @@ export const runSeed = async (db: DbClient, now: () => Date = () => new Date()):
     .update(creators)
     .set({ onboardingCompletedAt: now() })
     .where(and(eq(creators.id, SEED_IDS.creator), isNull(creators.onboardingCompletedAt)));
+
+  // Marketplace (M7.3): feature the demo creator + give it a category on a pre-M7.3 row.
+  await db
+    .update(creators)
+    .set({ category: 'Demo', isFeatured: true })
+    .where(and(eq(creators.id, SEED_IDS.creator), isNull(creators.category)));
 
   await db
     .insert(subscriptionPlans)

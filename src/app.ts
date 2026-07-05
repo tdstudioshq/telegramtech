@@ -50,7 +50,9 @@ import { AnalyticsService } from './core/services/analytics.service.js';
 import { AuditService } from './core/services/audit.service.js';
 import { AuthService } from './core/services/auth.service.js';
 import { CreatorService } from './core/services/creator.service.js';
+import { DiscoveryService } from './core/services/discovery.service.js';
 import { DropService } from './core/services/drop.service.js';
+import { FollowService } from './core/services/follow.service.js';
 import { OnboardingService } from './core/services/onboarding.service.js';
 import { PurchaseService } from './core/services/purchase.service.js';
 import { SubscriptionService } from './core/services/subscription.service.js';
@@ -94,6 +96,8 @@ export const createApplication = (env: Env, logger: Logger): Application => {
   const subscriptions = new SubscriptionService(uow, purchases, audit, systemClock);
   const analytics = new AnalyticsService(uow, systemClock);
   const onboarding = new OnboardingService(uow, systemClock);
+  const follows = new FollowService(uow);
+  const discovery = new DiscoveryService(uow);
   const auth = new AuthService(
     uow,
     new ScryptPasswordHasher(),
@@ -137,11 +141,13 @@ export const createApplication = (env: Env, logger: Logger): Application => {
   };
   configureTelegramBot(bot, botConfig, {
     creatorContext,
+    creators,
     users,
     drops,
     access,
     purchases,
     subscriptions,
+    follows,
     delivery,
     cache,
     logger: logger.child({ module: 'telegram' }),
@@ -160,7 +166,9 @@ export const createApplication = (env: Env, logger: Logger): Application => {
     subscriptions,
     analytics,
     onboarding,
+    discovery,
     content,
+    botUsername: env.BOT_USERNAME ?? null,
     logger: logger.child({ module: 'api' }),
   });
   const httpServer = new HttpServer(

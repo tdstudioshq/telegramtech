@@ -19,6 +19,8 @@ const envSchema = z
     BOT_MODE: z.enum(['polling', 'webhook']).default('polling'),
     // Shared-bot fallback storefront when /start carries no deep-link payload (M7.0).
     DEFAULT_CREATOR_SLUG: z.string().min(1).default('demo'),
+    // Shared-bot @username (no @) for marketplace deep-links (M7.3); optional.
+    BOT_USERNAME: z.string().min(1).optional(),
     WEBHOOK_URL: z.url().optional(),
     WEBHOOK_SECRET_TOKEN: z.string().min(1).optional(),
     PORT: z.coerce.number().int().positive().max(65_535).default(3000),

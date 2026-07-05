@@ -14,6 +14,10 @@ import type { ContentProvider } from '../../core/ports/content-provider.port.js'
 import type { AnalyticsService } from '../../core/services/analytics.service.js';
 import type { AuthPrincipal, AuthService, RegisterInput } from '../../core/services/auth.service.js';
 import type { CreatorService, ProfilePatchInput } from '../../core/services/creator.service.js';
+import type {
+  DiscoveryService,
+  PublicCreatorProfile,
+} from '../../core/services/discovery.service.js';
 import type { DropService } from '../../core/services/drop.service.js';
 import type { OnboardingService } from '../../core/services/onboarding.service.js';
 import type { SubscriptionService } from '../../core/services/subscription.service.js';
@@ -30,7 +34,10 @@ export interface ApiDependencies {
   readonly subscriptions: SubscriptionService;
   readonly analytics: AnalyticsService;
   readonly onboarding: OnboardingService;
+  readonly discovery: DiscoveryService;
   readonly content: ContentProvider;
+  /** Shared-bot @username for building storefront deep-links; null = omit the URL. */
+  readonly botUsername: string | null;
   readonly logger: Logger;
 }
 
@@ -52,6 +59,23 @@ const uploadableType = z.enum(CONTENT_TYPES).exclude(['text']);
 
 const PUBLISH_RE = /^\/api\/content\/drops\/([^/]+)\/publish$/;
 const ASSETS_RE = /^\/api\/content\/drops\/([^/]+)\/assets$/;
+const PUBLIC_PROFILE_RE = /^\/api\/public\/creators\/([^/]+)$/;
+
+const intParam = (value: string | null): number | undefined => {
+  if (value === null) return undefined;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : undefined;
+};
+
+/** Attach a full t.me deep-link to a public profile when the bot username is known. */
+const withDeepLink = (
+  profile: PublicCreatorProfile,
+  botUsername: string | null,
+): PublicCreatorProfile & { telegramUrl: string | null } => ({
+  ...profile,
+  telegramUrl:
+    botUsername === null ? null : `https://t.me/${botUsername}?start=${profile.startParam}`,
+});
 
 export const createApiHandler = (deps: ApiDependencies): HttpRequestHandler => {
   return async (req, res) => {
@@ -74,7 +98,34 @@ const route = async (
   const method = req.method ?? 'GET';
   const path = (req.url ?? '/').split('?')[0]?.replace(/\/+$/, '') || '/';
 
-  // ---- public routes ----
+  // ---- public marketplace routes (no auth, read-only) ----
+  if (method === 'GET' && path === '/api/public/creators/featured') {
+    return sendJson(res, 200, { creators: await deps.discovery.featured() });
+  }
+  if (method === 'GET' && path === '/api/public/categories') {
+    return sendJson(res, 200, { categories: await deps.discovery.categories() });
+  }
+  if (method === 'GET' && path === '/api/public/creators') {
+    const params = new URL(req.url ?? '/', 'http://localhost').searchParams;
+    return sendJson(
+      res,
+      200,
+      await deps.discovery.list({
+        query: params.get('query') ?? undefined,
+        category: params.get('category') ?? undefined,
+        limit: intParam(params.get('limit')),
+        offset: intParam(params.get('offset')),
+      }),
+    );
+  }
+  const publicProfile = method === 'GET' ? PUBLIC_PROFILE_RE.exec(path) : null;
+  if (publicProfile) {
+    const result = await deps.discovery.profile(decodeURIComponent(publicProfile[1] ?? ''));
+    if (!result.ok) return sendError(res, result.error);
+    return sendJson(res, 200, withDeepLink(result.value, deps.botUsername));
+  }
+
+  // ---- auth (public) ----
   if (method === 'POST' && path === '/api/auth/register') {
     const body = (await readJsonBody(req)) as RegisterInput;
     return sendResult(res, await deps.auth.register(body), 201);
