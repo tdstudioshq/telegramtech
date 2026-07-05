@@ -3,6 +3,7 @@
  * types (Q2), system settings. Deterministic UUIDs + ON CONFLICT DO NOTHING make
  * re-runs no-ops that never clobber later manual edits.
  */
+import { and, eq, isNull } from 'drizzle-orm';
 import type { DbClient } from './client.js';
 import {
   botSettings,
@@ -13,6 +14,9 @@ import {
   systemSettings,
   users,
 } from './schema/index.js';
+
+/** Deep-link handle for the seeded demo creator (M7.0); also the DEFAULT_CREATOR_SLUG default. */
+export const SEED_CREATOR_SLUG = 'demo';
 
 /** Fixed ids so re-runs target the same rows and FKs stay stable across environments. */
 export const SEED_IDS = {
@@ -48,10 +52,18 @@ export const runSeed = async (db: DbClient, now: () => Date = () => new Date()):
       id: SEED_IDS.creator,
       userId: SEED_IDS.creatorUser,
       displayName: 'Demo Creator',
+      slug: SEED_CREATOR_SLUG,
       bio: 'Seeded MVP creator (single tenant until SaaS onboarding).',
       status: 'active',
     })
     .onConflictDoNothing();
+
+  // Backfill the slug on a pre-M7.0 seed row (insert above is a no-op once it exists).
+  // Idempotent: only sets when still null, never clobbers a manually chosen slug.
+  await db
+    .update(creators)
+    .set({ slug: SEED_CREATOR_SLUG })
+    .where(and(eq(creators.id, SEED_IDS.creator), isNull(creators.slug)));
 
   await db
     .insert(subscriptionPlans)

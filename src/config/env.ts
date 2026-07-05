@@ -17,6 +17,8 @@ const envSchema = z
     // Telegram (first client adapter)
     BOT_TOKEN: z.string().min(1),
     BOT_MODE: z.enum(['polling', 'webhook']).default('polling'),
+    // Shared-bot fallback storefront when /start carries no deep-link payload (M7.0).
+    DEFAULT_CREATOR_SLUG: z.string().min(1).default('demo'),
     WEBHOOK_URL: z.url().optional(),
     WEBHOOK_SECRET_TOKEN: z.string().min(1).optional(),
     PORT: z.coerce.number().int().positive().max(65_535).default(3000),
@@ -39,6 +41,9 @@ const envSchema = z
     // Cache
     CACHE_PROVIDER: z.enum(['memory', 'noop', 'redis']).default('memory'),
     REDIS_URL: z.string().min(1).optional(),
+
+    // Dashboard/API auth (M7.1) — bearer session lifetime
+    SESSION_TTL_HOURS: z.coerce.number().int().positive().default(720),
 
     // Jobs (minutes)
     JOB_SUBSCRIPTION_SWEEP_INTERVAL: z.coerce.number().int().positive().default(5),

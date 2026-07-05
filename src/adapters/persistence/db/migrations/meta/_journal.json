@@ -8,6 +8,20 @@
       "when": 1783151280744,
       "tag": "0000_right_katie_power",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1783208926156,
+      "tag": "0001_simple_hulk",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1783210522015,
+      "tag": "0002_smiling_gideon",
+      "breakpoints": true
     }
   ]
 }

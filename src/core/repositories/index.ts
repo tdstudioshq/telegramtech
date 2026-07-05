@@ -9,10 +9,12 @@ import type {
   AuditLogEntry,
   BotSetting,
   Creator,
+  CreatorIdentity,
   Drop,
   DropAsset,
   Payment,
   Purchase,
+  Session,
   Subscription,
   SubscriptionPlan,
   SystemSetting,
@@ -56,10 +58,34 @@ export interface NewUser {
 
 export interface NewCreator {
   id?: CreatorId;
-  userId: UserId;
+  userId?: UserId | null;
   displayName: string;
+  slug?: string | null;
   bio?: string | null;
+  avatarUrl?: string | null;
   status: CreatorStatus;
+}
+
+/** Mutable profile fields a creator edits from the dashboard (M7.1). All optional. */
+export interface CreatorProfilePatch {
+  displayName?: string;
+  slug?: string | null;
+  bio?: string | null;
+  avatarUrl?: string | null;
+}
+
+export interface NewCreatorIdentity {
+  id?: string;
+  creatorId: CreatorId;
+  email: string;
+  passwordHash: string;
+}
+
+export interface NewSession {
+  id?: string;
+  identityId: string;
+  tokenHash: string;
+  expiresAt: Date;
 }
 
 export interface NewDrop {
@@ -170,12 +196,30 @@ export interface CreatorRepository {
   create(creator: NewCreator): Promise<Creator>;
   findById(id: CreatorId): Promise<Creator | null>;
   findByUserId(userId: UserId): Promise<Creator | null>;
+  /** Shared-bot deep-link resolution (M7.0): map a storefront slug to its creator. */
+  findBySlug(slug: string): Promise<Creator | null>;
+  /** Dashboard profile edit (M7.1): patch only the provided fields, stamp updated_at. */
+  update(id: CreatorId, patch: CreatorProfilePatch): Promise<Creator>;
+}
+
+export interface CreatorIdentityRepository {
+  create(identity: NewCreatorIdentity): Promise<CreatorIdentity>;
+  findByEmail(email: string): Promise<CreatorIdentity | null>;
+  findById(id: string): Promise<CreatorIdentity | null>;
+}
+
+export interface SessionRepository {
+  create(session: NewSession): Promise<Session>;
+  findByTokenHash(tokenHash: string): Promise<Session | null>;
+  deleteByTokenHash(tokenHash: string): Promise<void>;
 }
 
 export interface DropRepository {
   create(drop: NewDrop): Promise<Drop>;
   findById(id: DropId): Promise<Drop | null>;
   listPublishedByCreator(creatorId: CreatorId): Promise<Drop[]>;
+  /** Dashboard content management (M7.1): every drop for a creator, any status, newest first. */
+  listByCreator(creatorId: CreatorId): Promise<Drop[]>;
   /** draft → published, stamping published_at. Status transitions over deletion. */
   publish(id: DropId, at: Date): Promise<Drop>;
   addAsset(asset: NewDropAsset): Promise<DropAsset>;
@@ -197,6 +241,10 @@ export interface SubscriptionPlanRepository {
   create(plan: NewSubscriptionPlan): Promise<SubscriptionPlan>;
   findById(id: PlanId): Promise<SubscriptionPlan | null>;
   findByCreatorAndName(creatorId: CreatorId, name: string): Promise<SubscriptionPlan | null>;
+  /** A creator's active plans, oldest first (M7.0: resolve the current creator's plan for /subscribe). */
+  listActiveByCreator(creatorId: CreatorId): Promise<SubscriptionPlan[]>;
+  /** All of a creator's plans, any status, oldest first (M7.1 dashboard plan management). */
+  listByCreator(creatorId: CreatorId): Promise<SubscriptionPlan[]>;
 }
 
 export interface SubscriptionRepository {
@@ -210,6 +258,8 @@ export interface SubscriptionRepository {
   renew(id: SubscriptionId, newExpiresAt: Date): Promise<Subscription>;
   /** Sweep input: active rows with expires_at <= at, oldest first, bounded batch. */
   listLapsed(at: Date, limit: number): Promise<Subscription[]>;
+  /** Dashboard analytics (M7.1): count of a creator's live subscriptions (active, expires_at > at). */
+  countActiveByCreator(creatorId: CreatorId, at: Date): Promise<number>;
   /** Expiration is a single status flip (ADR-011); returns false if the row was no longer active (idempotent sweep). */
   markExpired(id: SubscriptionId): Promise<boolean>;
 }
@@ -240,6 +290,13 @@ export interface PurchaseRepository {
   listByUser(userId: UserId): Promise<Purchase[]>;
   markCompleted(id: PurchaseId): Promise<Purchase>;
   markFailed(id: PurchaseId): Promise<Purchase>;
+  /** Dashboard analytics (M7.1): completed-sale count + Stars revenue for a creator. */
+  aggregateByCreator(creatorId: CreatorId): Promise<CreatorSalesAggregate>;
+}
+
+export interface CreatorSalesAggregate {
+  readonly completedSales: number;
+  readonly revenueStars: number;
 }
 
 export interface AccessGrantRepository {
@@ -280,6 +337,8 @@ export interface SettingsRepository {
 export interface Repositories {
   users: UserRepository;
   creators: CreatorRepository;
+  creatorIdentities: CreatorIdentityRepository;
+  sessions: SessionRepository;
   drops: DropRepository;
   plans: SubscriptionPlanRepository;
   subscriptions: SubscriptionRepository;

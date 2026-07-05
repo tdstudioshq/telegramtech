@@ -8,6 +8,7 @@ import type { SubscriptionService } from '../../../core/services/subscription.se
 import { appError, type AppError } from '../../../shared/app-error.js';
 import type { CreatorId, DropId, PlanId } from '../../../shared/domain.js';
 import type { BotContext } from '../context.js';
+import type { CreatorContext } from '../creator-context.js';
 import {
   browseKeyboard,
   confirmSubscribeKeyboard,
@@ -28,8 +29,8 @@ import {
 import { parseCallbackData, type TelegramCallback } from './callback-data.js';
 
 export interface TelegramHandlerDependencies {
-  readonly creatorId: CreatorId;
-  readonly premiumPlanId: PlanId;
+  /** Resolves which creator (storefront) an update is about — M7.0 shared-bot routing. */
+  readonly creatorContext: CreatorContext;
   readonly drops: DropService;
   readonly access: AccessService;
   readonly purchases: PurchaseService;
@@ -39,19 +40,60 @@ export interface TelegramHandlerDependencies {
 
 const html = { parse_mode: 'HTML' as const };
 
+const NO_STOREFRONT = 'Open a creator’s link to get started.';
+
+/** The creator this user is currently browsing (deep-link session, else default). */
+const currentCreatorId = async (
+  ctx: BotContext,
+  deps: TelegramHandlerDependencies,
+): Promise<CreatorId | null> => {
+  const telegramId = ctx.from?.id;
+  if (telegramId === undefined) return null;
+  return deps.creatorContext.current(telegramId);
+};
+
+/** A creator's first active plan id, if any — used to offer "subscribe" (M7.0). */
+const primaryPlanId = async (
+  deps: TelegramHandlerDependencies,
+  creatorId: CreatorId,
+): Promise<PlanId | null> => {
+  const plans = await deps.subscriptions.listActivePlans(creatorId);
+  return plans[0]?.id ?? null;
+};
+
 export const registerTelegramHandlers = (
   bot: Telegraf<BotContext>,
   deps: TelegramHandlerDependencies,
 ): void => {
   bot.start(async (ctx) => {
+    // Deep-link entry: `?start=c_<slug>` selects (and remembers) the storefront.
+    const telegramId = ctx.from?.id;
+    let creatorId: CreatorId | null = null;
+    if (telegramId !== undefined) {
+      const linked = await deps.creatorContext.fromPayload(commandArgument(ctx));
+      if (linked !== null) {
+        await deps.creatorContext.remember(telegramId, linked.id);
+        creatorId = linked.id;
+      } else {
+        creatorId = await deps.creatorContext.current(telegramId);
+      }
+    }
     await ctx.reply(welcome(ctx.from?.first_name ?? null), html);
+    if (creatorId !== null) await showBrowse(ctx, deps, creatorId, 0);
   });
 
   bot.help(async (ctx) => {
     await ctx.reply(help(), html);
   });
 
-  bot.command('browse', async (ctx) => showBrowse(ctx, deps, 0));
+  bot.command('browse', async (ctx) => {
+    const creatorId = await currentCreatorId(ctx, deps);
+    if (creatorId === null) {
+      await ctx.reply(NO_STOREFRONT);
+      return;
+    }
+    await showBrowse(ctx, deps, creatorId, 0);
+  });
 
   bot.command('unlock', async (ctx) => {
     const argument = commandArgument(ctx);
@@ -64,7 +106,12 @@ export const registerTelegramHandlers = (
       await showUnlockPrompt(ctx, deps, dropId.data);
       return;
     }
-    const drops = (await deps.drops.listPublished(deps.creatorId)).filter(
+    const creatorId = await currentCreatorId(ctx, deps);
+    if (creatorId === null) {
+      await ctx.reply(NO_STOREFRONT);
+      return;
+    }
+    const drops = (await deps.drops.listPublished(creatorId)).filter(
       (drop) => drop.accessType === 'pay_per_unlock',
     );
     await ctx.reply(
@@ -73,18 +120,35 @@ export const registerTelegramHandlers = (
     );
   });
 
-  bot.command('subscribe', async (ctx) => showSubscribePrompt(ctx, deps, deps.premiumPlanId));
+  bot.command('subscribe', async (ctx) => {
+    const creatorId = await currentCreatorId(ctx, deps);
+    if (creatorId === null) {
+      await ctx.reply(NO_STOREFRONT);
+      return;
+    }
+    const planId = await primaryPlanId(deps, creatorId);
+    if (planId === null) {
+      await ctx.reply('This creator has no subscription plan yet.');
+      return;
+    }
+    await showSubscribePrompt(ctx, deps, planId);
+  });
 
   bot.command('my_access', async (ctx) => {
     const user = requireUser(ctx);
-    const drops = await deps.drops.listPublished(deps.creatorId);
+    const creatorId = await currentCreatorId(ctx, deps);
+    if (creatorId === null) {
+      await ctx.reply(NO_STOREFRONT);
+      return;
+    }
+    const drops = await deps.drops.listPublished(creatorId);
     const entries = await Promise.all(
       drops.map(async (drop) => ({
         drop,
         decision: await deps.access.resolveAccess(user.id, drop.id),
       })),
     );
-    const active = await deps.subscriptions.hasActiveSubscription(user.id, deps.creatorId);
+    const active = await deps.subscriptions.hasActiveSubscription(user.id, creatorId);
     await ctx.reply(myAccessView(entries, active), html);
   });
 
@@ -106,9 +170,15 @@ const handleCallback = async (
   callback: TelegramCallback,
 ): Promise<void> => {
   switch (callback.action) {
-    case 'browse':
-      await showBrowse(ctx, deps, callback.page);
+    case 'browse': {
+      const creatorId = await currentCreatorId(ctx, deps);
+      if (creatorId === null) {
+        await ctx.reply(NO_STOREFRONT);
+        return;
+      }
+      await showBrowse(ctx, deps, creatorId, callback.page);
       return;
+    }
     case 'detail':
       await showDetail(ctx, deps, callback.dropId);
       return;
@@ -130,9 +200,10 @@ const handleCallback = async (
 const showBrowse = async (
   ctx: BotContext,
   deps: TelegramHandlerDependencies,
+  creatorId: CreatorId,
   page: number,
 ): Promise<void> => {
-  const drops = await deps.drops.listPublished(deps.creatorId);
+  const drops = await deps.drops.listPublished(creatorId);
   await ctx.reply(
     browseHeader(drops.length),
     drops.length === 0 ? html : { ...html, ...browseKeyboard(drops, page) },
@@ -150,7 +221,12 @@ const showDetail = async (
     await replyAppError(ctx, appError('not_found', 'Drop not found.'));
     return;
   }
-  const keyboard = decision.allowed ? undefined : openKeyboard(decision.drop, deps.premiumPlanId);
+  // The subscribe button targets THIS drop's creator's plan (resolved per creator, M7.0).
+  const planId =
+    decision.drop.accessType === 'premium'
+      ? await primaryPlanId(deps, decision.drop.creatorId)
+      : null;
+  const keyboard = decision.allowed ? undefined : openKeyboard(decision.drop, planId);
   await ctx.reply(
     dropDetail(decision.drop, decision),
     keyboard === undefined ? html : { ...html, ...keyboard },

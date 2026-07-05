@@ -18,6 +18,7 @@ describe('parseEnv', () => {
     expect(result.value.NODE_ENV).toBe('development');
     expect(result.value.LOG_LEVEL).toBe('info');
     expect(result.value.BOT_MODE).toBe('polling');
+    expect(result.value.DEFAULT_CREATOR_SLUG).toBe('demo');
     expect(result.value.PORT).toBe(3000);
     expect(result.value.STORAGE_BUCKET).toBe('drops');
     expect(result.value.SIGNED_URL_TTL_SECONDS).toBe(120);

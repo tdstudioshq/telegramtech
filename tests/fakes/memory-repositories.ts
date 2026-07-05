@@ -9,15 +9,20 @@ import { randomUUID } from 'node:crypto';
 import type {
   AccessGrantRepository,
   AuditRepository,
+  CreatorIdentityRepository,
+  CreatorProfilePatch,
   CreatorRepository,
+  CreatorSalesAggregate,
   DropRepository,
   NewAccessGrant,
   NewAuditEntry,
   NewCreator,
+  NewCreatorIdentity,
   NewDrop,
   NewDropAsset,
   NewPayment,
   NewPurchase,
+  NewSession,
   NewSubscription,
   NewSubscriptionPlan,
   NewSystemSetting,
@@ -25,6 +30,7 @@ import type {
   PaymentRepository,
   PurchaseRepository,
   Repositories,
+  SessionRepository,
   SettingsRepository,
   SubscriptionPlanRepository,
   SubscriptionRepository,
@@ -35,10 +41,12 @@ import type {
   AuditLogEntry,
   BotSetting,
   Creator,
+  CreatorIdentity,
   Drop,
   DropAsset,
   Payment,
   Purchase,
+  Session,
   Subscription,
   SubscriptionPlan,
   SystemSetting,
@@ -59,6 +67,8 @@ import { FakeClock } from './fake-clock.js';
 export interface StoreState {
   users: User[];
   creators: Creator[];
+  creatorIdentities: CreatorIdentity[];
+  sessions: Session[];
   drops: Drop[];
   dropAssets: DropAsset[];
   plans: SubscriptionPlan[];
@@ -74,6 +84,8 @@ export interface StoreState {
 const emptyState = (): StoreState => ({
   users: [],
   creators: [],
+  creatorIdentities: [],
+  sessions: [],
   drops: [],
   dropAssets: [],
   plans: [],
@@ -109,6 +121,8 @@ export class MemoryStore {
     this.repos = {
       users: cloningRepo(new MemoryUserRepository(this)),
       creators: cloningRepo(new MemoryCreatorRepository(this)),
+      creatorIdentities: cloningRepo(new MemoryCreatorIdentityRepository(this)),
+      sessions: cloningRepo(new MemorySessionRepository(this)),
       drops: cloningRepo(new MemoryDropRepository(this)),
       plans: cloningRepo(new MemorySubscriptionPlanRepository(this)),
       subscriptions: cloningRepo(new MemorySubscriptionRepository(this)),
@@ -174,12 +188,17 @@ class MemoryCreatorRepository implements CreatorRepository {
   constructor(private readonly store: MemoryStore) {}
 
   async create(creator: NewCreator): Promise<Creator> {
+    if (creator.slug != null && this.store.state.creators.some((c) => c.slug === creator.slug)) {
+      throw new Error('unique constraint violated: creators.slug');
+    }
     const now = this.store.clock.now();
     const row: Creator = {
       id: creator.id ?? randomUUID(),
-      userId: creator.userId,
+      userId: creator.userId ?? null,
       displayName: creator.displayName,
+      slug: creator.slug ?? null,
       bio: creator.bio ?? null,
+      avatarUrl: creator.avatarUrl ?? null,
       status: creator.status,
       createdAt: now,
       updatedAt: now,
@@ -194,6 +213,83 @@ class MemoryCreatorRepository implements CreatorRepository {
 
   async findByUserId(userId: UserId): Promise<Creator | null> {
     return this.store.state.creators.find((c) => c.userId === userId) ?? null;
+  }
+
+  async findBySlug(slug: string): Promise<Creator | null> {
+    return this.store.state.creators.find((c) => c.slug === slug) ?? null;
+  }
+
+  async update(id: CreatorId, patch: CreatorProfilePatch): Promise<Creator> {
+    const creator = this.store.state.creators.find((c) => c.id === id);
+    if (creator === undefined) throw new Error(`creator ${id} not found`);
+    if (
+      patch.slug != null &&
+      this.store.state.creators.some((c) => c.id !== id && c.slug === patch.slug)
+    ) {
+      throw new Error('unique constraint violated: creators.slug');
+    }
+    if (patch.displayName !== undefined) creator.displayName = patch.displayName;
+    if (patch.slug !== undefined) creator.slug = patch.slug;
+    if (patch.bio !== undefined) creator.bio = patch.bio;
+    if (patch.avatarUrl !== undefined) creator.avatarUrl = patch.avatarUrl;
+    creator.updatedAt = this.store.clock.now();
+    return creator;
+  }
+}
+
+class MemoryCreatorIdentityRepository implements CreatorIdentityRepository {
+  constructor(private readonly store: MemoryStore) {}
+
+  async create(identity: NewCreatorIdentity): Promise<CreatorIdentity> {
+    if (this.store.state.creatorIdentities.some((i) => i.email === identity.email)) {
+      throw new Error('unique constraint violated: creator_identities.email');
+    }
+    if (this.store.state.creatorIdentities.some((i) => i.creatorId === identity.creatorId)) {
+      throw new Error('unique constraint violated: creator_identities.creator_id');
+    }
+    const now = this.store.clock.now();
+    const row: CreatorIdentity = {
+      id: identity.id ?? randomUUID(),
+      creatorId: identity.creatorId,
+      email: identity.email,
+      passwordHash: identity.passwordHash,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.store.state.creatorIdentities.push(row);
+    return row;
+  }
+
+  async findByEmail(email: string): Promise<CreatorIdentity | null> {
+    return this.store.state.creatorIdentities.find((i) => i.email === email) ?? null;
+  }
+
+  async findById(id: string): Promise<CreatorIdentity | null> {
+    return this.store.state.creatorIdentities.find((i) => i.id === id) ?? null;
+  }
+}
+
+class MemorySessionRepository implements SessionRepository {
+  constructor(private readonly store: MemoryStore) {}
+
+  async create(session: NewSession): Promise<Session> {
+    const row: Session = {
+      id: session.id ?? randomUUID(),
+      identityId: session.identityId,
+      tokenHash: session.tokenHash,
+      expiresAt: session.expiresAt,
+      createdAt: this.store.clock.now(),
+    };
+    this.store.state.sessions.push(row);
+    return row;
+  }
+
+  async findByTokenHash(tokenHash: string): Promise<Session | null> {
+    return this.store.state.sessions.find((s) => s.tokenHash === tokenHash) ?? null;
+  }
+
+  async deleteByTokenHash(tokenHash: string): Promise<void> {
+    this.store.state.sessions = this.store.state.sessions.filter((s) => s.tokenHash !== tokenHash);
   }
 }
 
@@ -227,6 +323,12 @@ class MemoryDropRepository implements DropRepository {
     return this.store.state.drops
       .filter((d) => d.creatorId === creatorId && d.status === 'published')
       .sort((a, b) => (b.publishedAt?.getTime() ?? 0) - (a.publishedAt?.getTime() ?? 0));
+  }
+
+  async listByCreator(creatorId: CreatorId): Promise<Drop[]> {
+    return this.store.state.drops
+      .filter((d) => d.creatorId === creatorId)
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
   }
 
   async publish(id: DropId, at: Date): Promise<Drop> {
@@ -307,6 +409,18 @@ class MemorySubscriptionPlanRepository implements SubscriptionPlanRepository {
 
   async findByCreatorAndName(creatorId: CreatorId, name: string): Promise<SubscriptionPlan | null> {
     return this.store.state.plans.find((p) => p.creatorId === creatorId && p.name === name) ?? null;
+  }
+
+  async listActiveByCreator(creatorId: CreatorId): Promise<SubscriptionPlan[]> {
+    return this.store.state.plans
+      .filter((p) => p.creatorId === creatorId && p.status === 'active')
+      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+  }
+
+  async listByCreator(creatorId: CreatorId): Promise<SubscriptionPlan[]> {
+    return this.store.state.plans
+      .filter((p) => p.creatorId === creatorId)
+      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
   }
 }
 
@@ -392,6 +506,15 @@ class MemorySubscriptionRepository implements SubscriptionRepository {
     sub.status = 'expired';
     sub.updatedAt = this.store.clock.now();
     return true;
+  }
+
+  async countActiveByCreator(creatorId: CreatorId, at: Date): Promise<number> {
+    return this.store.state.subscriptions.filter(
+      (s) =>
+        s.creatorId === creatorId &&
+        s.status === 'active' &&
+        s.expiresAt.getTime() > at.getTime(),
+    ).length;
   }
 }
 
@@ -520,6 +643,16 @@ class MemoryPurchaseRepository implements PurchaseRepository {
     purchase.status = 'failed';
     purchase.updatedAt = this.store.clock.now();
     return purchase;
+  }
+
+  async aggregateByCreator(creatorId: CreatorId): Promise<CreatorSalesAggregate> {
+    const completed = this.store.state.purchases.filter(
+      (p) => p.creatorId === creatorId && p.status === 'completed',
+    );
+    return {
+      completedSales: completed.length,
+      revenueStars: completed.reduce((sum, p) => sum + p.amountStars, 0),
+    };
   }
 }
 

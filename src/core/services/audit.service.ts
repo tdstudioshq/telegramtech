@@ -20,8 +20,12 @@ export const AUDIT_ACTIONS = [
   'subscription.activated',
   'subscription.expired',
   'subscription.renewed',
+  'plan.created',
   'grant.created',
   'grant.revoked',
+  // M7.1 dashboard/API creator-config actions (actor 'system' until creator/admin actors land in M7.6)
+  'creator.registered',
+  'creator.updated',
   'content.delivered',
   'content.uploaded',
   // post-commit enrichment rows appended by event handlers (never the core row)

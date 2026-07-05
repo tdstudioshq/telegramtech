@@ -6,15 +6,20 @@ import { and, asc, desc, eq, gt, isNull, lt, lte, sql } from 'drizzle-orm';
 import type {
   AccessGrantRepository,
   AuditRepository,
+  CreatorIdentityRepository,
+  CreatorProfilePatch,
   CreatorRepository,
+  CreatorSalesAggregate,
   DropRepository,
   NewAccessGrant,
   NewAuditEntry,
   NewCreator,
+  NewCreatorIdentity,
   NewDrop,
   NewDropAsset,
   NewPayment,
   NewPurchase,
+  NewSession,
   NewSubscription,
   NewSubscriptionPlan,
   NewSystemSetting,
@@ -22,6 +27,7 @@ import type {
   PaymentRepository,
   PurchaseRepository,
   Repositories,
+  SessionRepository,
   SettingsRepository,
   SubscriptionPlanRepository,
   SubscriptionRepository,
@@ -32,10 +38,12 @@ import type {
   AuditLogEntry,
   BotSetting,
   Creator,
+  CreatorIdentity,
   Drop,
   DropAsset,
   Payment,
   Purchase,
+  Session,
   Subscription,
   SubscriptionPlan,
   SystemSetting,
@@ -56,11 +64,13 @@ import {
   accessGrants,
   auditLogs,
   botSettings,
+  creatorIdentities,
   creators,
   dropAssets,
   drops,
   payments,
   purchases,
+  sessions,
   subscriptionPlans,
   subscriptions,
   systemSettings,
@@ -114,6 +124,62 @@ export class DrizzleCreatorRepository implements CreatorRepository {
   async findByUserId(userId: UserId): Promise<Creator | null> {
     return first(await this.db.select().from(creators).where(eq(creators.userId, userId)).limit(1));
   }
+
+  async findBySlug(slug: string): Promise<Creator | null> {
+    return first(await this.db.select().from(creators).where(eq(creators.slug, slug)).limit(1));
+  }
+
+  async update(id: CreatorId, patch: CreatorProfilePatch): Promise<Creator> {
+    return one(
+      await this.db
+        .update(creators)
+        .set({ ...patch, updatedAt: sql`now()` })
+        .where(eq(creators.id, id))
+        .returning(),
+    );
+  }
+}
+
+export class DrizzleCreatorIdentityRepository implements CreatorIdentityRepository {
+  constructor(private readonly db: DbSession) {}
+
+  async create(identity: NewCreatorIdentity): Promise<CreatorIdentity> {
+    return one(await this.db.insert(creatorIdentities).values(identity).returning());
+  }
+
+  async findByEmail(email: string): Promise<CreatorIdentity | null> {
+    return first(
+      await this.db
+        .select()
+        .from(creatorIdentities)
+        .where(eq(creatorIdentities.email, email))
+        .limit(1),
+    );
+  }
+
+  async findById(id: string): Promise<CreatorIdentity | null> {
+    return first(
+      await this.db.select().from(creatorIdentities).where(eq(creatorIdentities.id, id)).limit(1),
+    );
+  }
+}
+
+export class DrizzleSessionRepository implements SessionRepository {
+  constructor(private readonly db: DbSession) {}
+
+  async create(session: NewSession): Promise<Session> {
+    return one(await this.db.insert(sessions).values(session).returning());
+  }
+
+  async findByTokenHash(tokenHash: string): Promise<Session | null> {
+    return first(
+      await this.db.select().from(sessions).where(eq(sessions.tokenHash, tokenHash)).limit(1),
+    );
+  }
+
+  async deleteByTokenHash(tokenHash: string): Promise<void> {
+    await this.db.delete(sessions).where(eq(sessions.tokenHash, tokenHash));
+  }
 }
 
 const mapAsset = (row: typeof dropAssets.$inferSelect): DropAsset => ({
@@ -138,6 +204,14 @@ export class DrizzleDropRepository implements DropRepository {
       .from(drops)
       .where(and(eq(drops.creatorId, creatorId), eq(drops.status, 'published')))
       .orderBy(desc(drops.publishedAt));
+  }
+
+  async listByCreator(creatorId: CreatorId): Promise<Drop[]> {
+    return this.db
+      .select()
+      .from(drops)
+      .where(eq(drops.creatorId, creatorId))
+      .orderBy(desc(drops.createdAt));
   }
 
   async publish(id: DropId, at: Date): Promise<Drop> {
@@ -203,6 +277,22 @@ export class DrizzleSubscriptionPlanRepository implements SubscriptionPlanReposi
         .where(and(eq(subscriptionPlans.creatorId, creatorId), eq(subscriptionPlans.name, name)))
         .limit(1),
     );
+  }
+
+  async listActiveByCreator(creatorId: CreatorId): Promise<SubscriptionPlan[]> {
+    return this.db
+      .select()
+      .from(subscriptionPlans)
+      .where(and(eq(subscriptionPlans.creatorId, creatorId), eq(subscriptionPlans.status, 'active')))
+      .orderBy(asc(subscriptionPlans.createdAt));
+  }
+
+  async listByCreator(creatorId: CreatorId): Promise<SubscriptionPlan[]> {
+    return this.db
+      .select()
+      .from(subscriptionPlans)
+      .where(eq(subscriptionPlans.creatorId, creatorId))
+      .orderBy(asc(subscriptionPlans.createdAt));
   }
 }
 
@@ -285,6 +375,20 @@ export class DrizzleSubscriptionRepository implements SubscriptionRepository {
       .where(and(eq(subscriptions.id, id), eq(subscriptions.status, 'active')))
       .returning({ id: subscriptions.id });
     return updated.length > 0;
+  }
+
+  async countActiveByCreator(creatorId: CreatorId, at: Date): Promise<number> {
+    const rows = await this.db
+      .select({ n: sql<number>`count(*)::int` })
+      .from(subscriptions)
+      .where(
+        and(
+          eq(subscriptions.creatorId, creatorId),
+          eq(subscriptions.status, 'active'),
+          gt(subscriptions.expiresAt, at),
+        ),
+      );
+    return rows[0]?.n ?? 0;
   }
 }
 
@@ -397,6 +501,17 @@ export class DrizzlePurchaseRepository implements PurchaseRepository {
         .where(eq(purchases.id, id))
         .returning(),
     );
+  }
+
+  async aggregateByCreator(creatorId: CreatorId): Promise<CreatorSalesAggregate> {
+    const rows = await this.db
+      .select({
+        completedSales: sql<number>`count(*)::int`,
+        revenueStars: sql<number>`coalesce(sum(${purchases.amountStars}), 0)::int`,
+      })
+      .from(purchases)
+      .where(and(eq(purchases.creatorId, creatorId), eq(purchases.status, 'completed')));
+    return { completedSales: rows[0]?.completedSales ?? 0, revenueStars: rows[0]?.revenueStars ?? 0 };
   }
 }
 
@@ -530,6 +645,8 @@ export class DrizzleSettingsRepository implements SettingsRepository {
 export const buildRepositories = (db: DbSession): Repositories => ({
   users: new DrizzleUserRepository(db),
   creators: new DrizzleCreatorRepository(db),
+  creatorIdentities: new DrizzleCreatorIdentityRepository(db),
+  sessions: new DrizzleSessionRepository(db),
   drops: new DrizzleDropRepository(db),
   plans: new DrizzleSubscriptionPlanRepository(db),
   subscriptions: new DrizzleSubscriptionRepository(db),

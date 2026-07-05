@@ -41,12 +41,35 @@ export interface User {
 
 export interface Creator {
   id: CreatorId;
-  userId: UserId;
+  /** Nullable since M7.1: web-registered creators have a CreatorIdentity, not a Telegram user. */
+  userId: UserId | null;
   displayName: string;
+  /** Public storefront handle used by shared-bot deep-links (`?start=c_<slug>`). Nullable until backfilled/onboarded. */
+  slug: string | null;
   bio: string | null;
+  avatarUrl: string | null;
   status: CreatorStatus;
   createdAt: Date;
   updatedAt: Date;
+}
+
+/** M7.1 — a creator's web/API login identity (distinct from a Telegram user). */
+export interface CreatorIdentity {
+  id: string;
+  creatorId: CreatorId;
+  email: string;
+  passwordHash: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+/** M7.1 — an opaque bearer session; only the token hash is persisted. */
+export interface Session {
+  id: string;
+  identityId: string;
+  tokenHash: string;
+  expiresAt: Date;
+  createdAt: Date;
 }
 
 export interface Drop {

@@ -5,6 +5,7 @@
  */
 export type AppErrorCode =
   | 'validation'
+  | 'unauthorized'
   | 'not_found'
   | 'forbidden'
   | 'conflict'

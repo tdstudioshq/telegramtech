@@ -126,6 +126,23 @@ export class DropService {
     return this.uow.run(async (repos) => repos.drops.listPublishedByCreator(creatorId));
   }
 
+  /** Dashboard content list (M7.1): every drop for a creator, any status, newest first. */
+  async listByCreator(creatorId: CreatorId): Promise<Drop[]> {
+    return this.uow.run(async (repos) => repos.drops.listByCreator(creatorId));
+  }
+
+  /** Dashboard (M7.1): a creator's own drop by id, ANY status — the ownership guard
+   * an upload runs before storing bytes (prevents cross-tenant orphan writes). */
+  async getOwnedDrop(creatorId: CreatorId, dropId: DropId): Promise<Result<Drop, AppError>> {
+    return this.uow.run(async (repos) => {
+      const drop = await repos.drops.findById(dropId);
+      if (drop === null || drop.creatorId !== creatorId) {
+        return err(appError('not_found', 'Drop not found.', { dropId }));
+      }
+      return ok(drop);
+    });
+  }
+
   /** Published drop + its assets, for pre-delivery views. Never exposes drafts. */
   async getPublishedDrop(
     dropId: DropId,

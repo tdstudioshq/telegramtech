@@ -2,12 +2,14 @@
  * Composition root: the only module that wires core, persistence, providers,
  * the Telegram client, and the M5 background job scheduler together.
  */
+import { createApiHandler } from './adapters/api/router.js';
+import { ScryptPasswordHasher } from './adapters/auth/scrypt-password-hasher.js';
+import { CryptoSessionTokenService } from './adapters/auth/crypto-session-token.js';
 import { MemoryCacheProvider } from './adapters/cache/memory-cache.provider.js';
 import { NoopCacheProvider } from './adapters/cache/noop-cache.provider.js';
 import { SupabaseStorageProvider } from './adapters/content/supabase-storage.provider.js';
 import { MockPaymentProvider } from './adapters/payments/mock-payment.provider.js';
 import { createDatabase } from './adapters/persistence/db/client.js';
-import { SEED_IDS } from './adapters/persistence/db/seed.js';
 import { DrizzleUnitOfWork } from './adapters/persistence/db/unit-of-work.js';
 import {
   configureTelegramBot,
@@ -18,6 +20,7 @@ import {
   startTelegramPolling,
   type TelegramBotConfig,
 } from './adapters/telegram/bot.js';
+import { CreatorContext } from './adapters/telegram/creator-context.js';
 import { TelegramContentTransport } from './adapters/telegram/telegram-content-transport.js';
 import { TelegramNotifier } from './adapters/telegram/telegram-notifier.js';
 import {
@@ -43,7 +46,10 @@ import {
 import type { CacheProvider } from './core/ports/cache-provider.port.js';
 import type { Clock } from './core/ports/clock.port.js';
 import { AccessService } from './core/services/access.service.js';
+import { AnalyticsService } from './core/services/analytics.service.js';
 import { AuditService } from './core/services/audit.service.js';
+import { AuthService } from './core/services/auth.service.js';
+import { CreatorService } from './core/services/creator.service.js';
 import { DropService } from './core/services/drop.service.js';
 import { PurchaseService } from './core/services/purchase.service.js';
 import { SubscriptionService } from './core/services/subscription.service.js';
@@ -75,14 +81,25 @@ export const createApplication = (env: Env, logger: Logger): Application => {
   const audit = new AuditService();
   const access = new AccessService(uow, systemClock);
   const users = new UserService(uow, audit);
+  const creators = new CreatorService(uow);
   const drops = new DropService(uow, audit, systemClock);
   const cache = createCache(env, systemClock);
+  const creatorContext = new CreatorContext(cache, creators, env.DEFAULT_CREATOR_SLUG);
   const paymentProvider = new MockPaymentProvider({
     delayMs: env.MOCK_PAYMENT_DELAY_MS,
     failureRate: env.MOCK_PAYMENT_FAILURE_RATE,
   });
   const purchases = new PurchaseService(uow, paymentProvider, access, audit, systemClock);
   const subscriptions = new SubscriptionService(uow, purchases, audit, systemClock);
+  const analytics = new AnalyticsService(uow, systemClock);
+  const auth = new AuthService(
+    uow,
+    new ScryptPasswordHasher(),
+    new CryptoSessionTokenService(),
+    systemClock,
+    audit,
+    env.SESSION_TTL_HOURS,
+  );
 
   const bot = createTelegramBot(env.BOT_TOKEN);
   const notifier = new TelegramNotifier(bot.telegram);
@@ -117,8 +134,7 @@ export const createApplication = (env: Env, logger: Logger): Application => {
     rateLimitWindowSeconds: env.RATE_LIMIT_WINDOW_SECONDS,
   };
   configureTelegramBot(bot, botConfig, {
-    creatorId: SEED_IDS.creator,
-    premiumPlanId: SEED_IDS.premiumPlan,
+    creatorContext,
     users,
     drops,
     access,
@@ -135,8 +151,22 @@ export const createApplication = (env: Env, logger: Logger): Application => {
   const webhookRoute: WebhookRoute | undefined = isWebhook
     ? { path: new URL(requireWebhookUrl(env)).pathname, handler: createTelegramWebhookHandler(bot, botConfig) }
     : undefined;
+  const apiHandler = createApiHandler({
+    auth,
+    creators,
+    drops,
+    subscriptions,
+    analytics,
+    content,
+    logger: logger.child({ module: 'api' }),
+  });
   const httpServer = new HttpServer(
-    { port: env.PORT, healthPath: HEALTH_PATH, webhook: webhookRoute },
+    {
+      port: env.PORT,
+      healthPath: HEALTH_PATH,
+      webhook: webhookRoute,
+      api: { prefix: '/api', handler: apiHandler },
+    },
     createHealthCheck({ database, version: APP_VERSION }),
     logger.child({ module: 'http' }),
   );

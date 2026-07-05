@@ -35,7 +35,7 @@ export const browseKeyboard = (drops: readonly Drop[], page: number) => {
   return Markup.inlineKeyboard(rows);
 };
 
-export const openKeyboard = (drop: Drop, premiumPlanId: string) => {
+export const openKeyboard = (drop: Drop, premiumPlanId: string | null) => {
   if (drop.accessType === 'pay_per_unlock') {
     return Markup.inlineKeyboard([
       Markup.button.callback(
@@ -44,7 +44,8 @@ export const openKeyboard = (drop: Drop, premiumPlanId: string) => {
       ),
     ]);
   }
-  if (drop.accessType === 'premium') {
+  // premium: only offer the button if the drop's creator has an active plan (M7.0)
+  if (drop.accessType === 'premium' && premiumPlanId !== null) {
     return Markup.inlineKeyboard([
       Markup.button.callback(
         'View Premium',

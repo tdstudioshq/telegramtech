@@ -11,7 +11,7 @@
 import { appError, type AppError } from '../../shared/app-error.js';
 import { err, ok, type Result } from '../../shared/result.js';
 import type { Payment, Purchase, Subscription, SubscriptionPlan } from '../../shared/entities.js';
-import type { CreatorId, PlanId, UserId } from '../../shared/domain.js';
+import type { CreatorId, PlanId, Stars, UserId } from '../../shared/domain.js';
 import type { Clock } from '../ports/clock.port.js';
 import type { UnitOfWork } from '../repositories/index.js';
 import { AuditService } from './audit.service.js';
@@ -23,6 +23,14 @@ export interface SubscribeInput {
   readonly planId: PlanId;
   readonly idempotencyKey: string;
   readonly correlationId?: string;
+}
+
+export interface CreatePlanInput {
+  readonly creatorId: CreatorId;
+  readonly name: string;
+  readonly description?: string | null;
+  readonly priceStars: Stars;
+  readonly durationDays: number;
 }
 
 export interface SubscribeOutcome {
@@ -205,6 +213,50 @@ export class SubscriptionService {
         occurredAt: now,
       });
       return ok({ subscription, ...finalized, renewed });
+    });
+  }
+
+  /** Client read path (M7.0): the current creator's active plans, so a channel can
+   * offer "subscribe" without knowing the plan id/name up front. */
+  async listActivePlans(creatorId: CreatorId): Promise<SubscriptionPlan[]> {
+    return this.uow.run(async (repos) => repos.plans.listActiveByCreator(creatorId));
+  }
+
+  /** Dashboard (M7.1): all of a creator's plans, any status. */
+  async listPlans(creatorId: CreatorId): Promise<SubscriptionPlan[]> {
+    return this.uow.run(async (repos) => repos.plans.listByCreator(creatorId));
+  }
+
+  /** Dashboard (M7.1): create an active plan. Money is integer Stars (mirrors the DB CHECK). */
+  async createPlan(input: CreatePlanInput): Promise<Result<SubscriptionPlan, AppError>> {
+    const name = input.name.trim();
+    if (name.length === 0) return err(appError('validation', 'Plan name is required.'));
+    if (!Number.isInteger(input.priceStars) || input.priceStars <= 0) {
+      return err(appError('validation', 'Price must be a positive whole number of Stars.', { priceStars: input.priceStars }));
+    }
+    if (!Number.isInteger(input.durationDays) || input.durationDays <= 0) {
+      return err(appError('validation', 'Duration must be a positive number of days.', { durationDays: input.durationDays }));
+    }
+    return this.uow.run(async (repos) => {
+      const creator = await CreatorService.requireActive(repos, input.creatorId);
+      if (!creator.ok) return creator;
+      const plan = await repos.plans.create({
+        creatorId: input.creatorId,
+        name,
+        description: input.description ?? null,
+        priceStars: input.priceStars,
+        durationDays: input.durationDays,
+        status: 'active',
+      });
+      await this.audit.record(repos, {
+        creatorId: input.creatorId,
+        action: 'plan.created',
+        entityType: 'subscription_plan',
+        entityId: plan.id,
+        actorType: 'system',
+        context: { priceStars: plan.priceStars, durationDays: plan.durationDays },
+      });
+      return ok(plan);
     });
   }
 

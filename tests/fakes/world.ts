@@ -42,11 +42,15 @@ let telegramIdSeq = 1000n;
 export const givenUser = async (world: TestWorld): Promise<User> =>
   world.store.repos.users.create({ telegramId: (telegramIdSeq += 1n) });
 
-export const givenCreator = async (world: TestWorld): Promise<Creator> => {
+export const givenCreator = async (
+  world: TestWorld,
+  opts: { slug?: string; displayName?: string } = {},
+): Promise<Creator> => {
   const owner = await givenUser(world);
   return world.store.repos.creators.create({
     userId: owner.id,
-    displayName: 'Test Creator',
+    displayName: opts.displayName ?? 'Test Creator',
+    slug: opts.slug ?? null,
     status: 'active',
   });
 };

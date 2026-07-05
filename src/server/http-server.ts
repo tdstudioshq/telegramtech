@@ -28,10 +28,17 @@ export interface WebhookRoute {
   readonly handler: HttpRequestHandler;
 }
 
+/** A handler mounted for every path under `prefix` (e.g. the JSON API adapter). */
+export interface MountedApp {
+  readonly prefix: string;
+  readonly handler: HttpRequestHandler;
+}
+
 export interface HttpServerConfig {
   readonly port: number;
   readonly healthPath: string;
   readonly webhook?: WebhookRoute;
+  readonly api?: MountedApp;
 }
 
 export class HttpServer {
@@ -72,7 +79,7 @@ export class HttpServer {
   }
 
   private async route(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    const path = (req.url ?? '/').split('?')[0];
+    const path = (req.url ?? '/').split('?')[0] ?? '/';
 
     if (path === this.config.healthPath) {
       if (req.method !== 'GET' && req.method !== 'HEAD') {
@@ -90,6 +97,12 @@ export class HttpServer {
     const webhook = this.config.webhook;
     if (webhook !== undefined && path === webhook.path) {
       await webhook.handler(req, res);
+      return;
+    }
+
+    const api = this.config.api;
+    if (api !== undefined && path.startsWith(api.prefix)) {
+      await api.handler(req, res);
       return;
     }
 

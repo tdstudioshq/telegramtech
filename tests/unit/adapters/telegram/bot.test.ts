@@ -6,7 +6,9 @@ import {
   type TelegramBotConfig,
 } from '../../../../src/adapters/telegram/bot.js';
 import { NoopCacheProvider } from '../../../../src/adapters/cache/noop-cache.provider.js';
+import { CreatorContext } from '../../../../src/adapters/telegram/creator-context.js';
 import { DeliveryEngine } from '../../../../src/core/engines/delivery.engine.js';
+import { CreatorService } from '../../../../src/core/services/creator.service.js';
 import { DropService } from '../../../../src/core/services/drop.service.js';
 import { PurchaseService } from '../../../../src/core/services/purchase.service.js';
 import { SubscriptionService } from '../../../../src/core/services/subscription.service.js';
@@ -27,12 +29,15 @@ const config: TelegramBotConfig = {
 describe('Telegram bot commands and callbacks', () => {
   it('registers users, browses, unlocks, subscribes, and reports access', async () => {
     const world = createWorld();
-    const creator = await givenCreator(world);
+    const creator = await givenCreator(world, { slug: 'demo' });
     await givenPublishedDrop(world, creator, 'free');
     const unlockDrop = await givenPublishedDrop(world, creator, 'pay_per_unlock');
     const plan = await givenPlan(world, creator);
     const logger = createLogger({ level: 'silent' });
     const users = new UserService(world.uow, world.audit);
+    const creators = new CreatorService(world.uow);
+    const cache = new NoopCacheProvider();
+    const creatorContext = new CreatorContext(cache, creators, 'demo');
     const drops = new DropService(world.uow, world.audit, world.clock);
     const paymentProvider = new FakePaymentProvider();
     const purchases = new PurchaseService(
@@ -54,15 +59,14 @@ describe('Telegram bot commands and callbacks', () => {
     );
     const bot = createTelegramBot(config.token);
     configureTelegramBot(bot, config, {
-      creatorId: creator.id,
-      premiumPlanId: plan.id,
+      creatorContext,
       users,
       drops,
       access: world.access,
       purchases,
       subscriptions,
       delivery,
-      cache: new NoopCacheProvider(),
+      cache,
       logger,
     });
     bot.botInfo = {
