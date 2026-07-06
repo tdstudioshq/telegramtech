@@ -8,7 +8,12 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { ESLint } from 'eslint';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+
+// The behavioral tests below load full ESLint in-process and parse TypeScript, which can
+// exceed the default 5s timeout under parallel suite load / slow CI runners. Give the
+// whole file generous headroom (the structural tests finish in ms regardless).
+vi.setConfig({ testTimeout: 30_000 });
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 // eslint.config.js is untyped JS (no import types) — assert against its source text.

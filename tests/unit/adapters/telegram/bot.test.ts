@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   configureTelegramBot,
   createTelegramBot,
+  registerTelegramWebhook,
   type TelegramBotConfig,
 } from '../../../../src/adapters/telegram/bot.js';
 import { NoopCacheProvider } from '../../../../src/adapters/cache/noop-cache.provider.js';
@@ -111,6 +112,51 @@ describe('Telegram bot commands and callbacks', () => {
     expect(sentTexts.some((text) => text.includes('Unlocked'))).toBe(true);
     expect(sentTexts.some((text) => text.includes('Subscribed'))).toBe(true);
     expect(sentTexts.some((text) => text.includes('Your access'))).toBe(true);
+  });
+});
+
+describe('registerTelegramWebhook — multi-replica 429 resilience (M7.4.1)', () => {
+  const webhookConfig: TelegramBotConfig = {
+    ...config,
+    mode: 'webhook',
+    webhookUrl: 'https://bot.example.com/telegram/webhook',
+    webhookSecretToken: 'secret',
+  };
+  const rateLimit = () => {
+    const e = new Error('429: Too Many Requests') as Error & {
+      response?: { error_code: number; parameters: { retry_after: number } };
+    };
+    e.response = { error_code: 429, parameters: { retry_after: 1 } };
+    return e;
+  };
+  const noSleep = async (): Promise<void> => undefined; // deterministic: skip the real backoff
+
+  it('retries setWebhook on 429 and succeeds', async () => {
+    const bot = createTelegramBot(config.token);
+    vi.spyOn(bot.telegram, 'setMyCommands').mockResolvedValue(true as never);
+    let calls = 0;
+    vi.spyOn(bot.telegram, 'setWebhook').mockImplementation(async () => {
+      calls += 1;
+      if (calls === 1) throw rateLimit();
+      return true as never;
+    });
+
+    await registerTelegramWebhook(bot, webhookConfig, createLogger({ level: 'silent' }), noSleep);
+    expect(calls).toBe(2); // 429 once, retried, then succeeded
+  });
+
+  it('does NOT throw when setWebhook keeps 429ing (non-fatal — another replica/prior deploy has it)', async () => {
+    const bot = createTelegramBot(config.token);
+    vi.spyOn(bot.telegram, 'setMyCommands').mockResolvedValue(true as never);
+    const setWebhook = vi
+      .spyOn(bot.telegram, 'setWebhook')
+      .mockRejectedValue(rateLimit());
+
+    // The whole point: a persistent 429 must not crash a replica's boot.
+    await expect(
+      registerTelegramWebhook(bot, webhookConfig, createLogger({ level: 'silent' }), noSleep),
+    ).resolves.toBeUndefined();
+    expect(setWebhook.mock.calls.length).toBe(5); // exhausted the retry budget, then continued
   });
 });
 

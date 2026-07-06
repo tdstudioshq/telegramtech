@@ -223,7 +223,7 @@ export const createApplication = (env: Env, logger: Logger): Application => {
         await httpServer.start();
         scheduler.start();
         if (isWebhook) {
-          await registerTelegramWebhook(bot, botConfig);
+          await registerTelegramWebhook(bot, botConfig, logger);
           logger.info('webhook registered — accepting updates');
         } else {
           await startTelegramPolling(bot); // blocks until the bot stops

@@ -71,18 +71,76 @@ export const createTelegramWebhookHandler = (
   return bot.webhookCallback(new URL(webhookUrl).pathname, { secretToken: webhookSecretToken });
 };
 
+const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Telegram 429 retry_after (seconds) if the error is a rate limit, else null. */
+const rateLimitRetryAfter = (error: unknown): number | null => {
+  const e = error as { response?: { error_code?: number; parameters?: { retry_after?: number } } };
+  return e?.response?.error_code === 429 ? (e.response.parameters?.retry_after ?? 1) : null;
+};
+
+/**
+ * Run a Telegram registration call, retrying on 429 (respecting retry_after). At
+ * numReplicas>1 every replica registers the SAME shared webhook on boot, so concurrent
+ * setWebhook calls get 429'd (Telegram allows ~1/sec) — retrying lets them converge
+ * instead of the loser crash-looping its boot. On persistent failure it logs and returns
+ * WITHOUT throwing: the webhook is shared + persistent (already set by another replica or
+ * the prior deploy, unchanged URL), so a boot must never die over a redundant call.
+ */
+const registerWithRetry = async (
+  op: () => Promise<unknown>,
+  what: string,
+  logger: Logger,
+  sleep: (ms: number) => Promise<void>,
+  maxAttempts = 5,
+): Promise<void> => {
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      await op();
+      return;
+    } catch (error) {
+      const retryAfter = rateLimitRetryAfter(error);
+      if (retryAfter !== null && attempt < maxAttempts) {
+        logger.warn({ what, attempt, retryAfter }, 'telegram rate-limited — retrying');
+        await sleep((retryAfter + 0.5) * 1000);
+        continue;
+      }
+      logger.warn(
+        { err: error, what, attempt },
+        'telegram registration failed after retries — continuing (webhook is shared/persistent)',
+      );
+      return;
+    }
+  }
+};
+
 /** Register the bot's commands + point Telegram at the webhook URL. Call AFTER the
- * HTTP server is listening (webhook mode, production). */
+ * HTTP server is listening (webhook mode, production). Resilient to Telegram 429s so a
+ * multi-replica boot converges instead of crash-looping (see registerWithRetry).
+ * `sleep` is injectable for deterministic tests; production uses the real timer. */
 export const registerTelegramWebhook = async (
   bot: Telegraf<BotContext>,
   config: TelegramBotConfig,
+  logger: Logger,
+  sleep: (ms: number) => Promise<void> = delay,
 ): Promise<void> => {
   const { webhookUrl, webhookSecretToken } = requireWebhookConfig(config);
-  await bot.telegram.setMyCommands(BOT_COMMANDS);
-  await bot.telegram.setWebhook(webhookUrl, {
-    secret_token: webhookSecretToken,
-    drop_pending_updates: false,
-  });
+  await registerWithRetry(
+    () => bot.telegram.setMyCommands(BOT_COMMANDS),
+    'setMyCommands',
+    logger,
+    sleep,
+  );
+  await registerWithRetry(
+    () =>
+      bot.telegram.setWebhook(webhookUrl, {
+        secret_token: webhookSecretToken,
+        drop_pending_updates: false,
+      }),
+    'setWebhook',
+    logger,
+    sleep,
+  );
 };
 
 /** Best-effort webhook teardown on shutdown — a failure here never blocks exit. */
