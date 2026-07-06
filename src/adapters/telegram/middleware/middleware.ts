@@ -75,5 +75,13 @@ export const handleTelegramError = async (ctx: BotContext, error: unknown): Prom
   const message = isAppError(error)
     ? error.message
     : 'Something went wrong. Please try again in a moment.';
-  await ctx.reply(message);
+  // The error-reply MUST NOT throw. This runs from both errorMiddleware and bot.catch, so
+  // a failed reply here (user blocked the bot, chat not found, Telegram unreachable — all
+  // routine in production) would escape as an unhandledRejection and shut the process down.
+  // Swallow it; the original error is already logged above.
+  try {
+    await ctx.reply(message);
+  } catch (replyError) {
+    ctx.log.warn({ err: replyError }, 'failed to deliver error reply (ignored)');
+  }
 };

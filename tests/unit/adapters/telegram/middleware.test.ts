@@ -4,7 +4,10 @@
  * stop the chain when a user exceeds the window.
  */
 import { describe, expect, it, vi } from 'vitest';
-import { rateLimitMiddleware } from '../../../../src/adapters/telegram/middleware/middleware.js';
+import {
+  handleTelegramError,
+  rateLimitMiddleware,
+} from '../../../../src/adapters/telegram/middleware/middleware.js';
 import type { CacheProvider } from '../../../../src/core/ports/cache-provider.port.js';
 import type { BotContext } from '../../../../src/adapters/telegram/context.js';
 
@@ -72,5 +75,22 @@ describe('rateLimitMiddleware', () => {
     await rateLimitMiddleware(cacheWhereIncr(incr), 20, 60)(ctx, next);
     expect(next).toHaveBeenCalledOnce();
     expect(incr).not.toHaveBeenCalled();
+  });
+});
+
+describe('handleTelegramError — a failed error-reply must never escape (M7.4.2)', () => {
+  it('does NOT throw when the error-reply itself fails (guards unhandledRejection → shutdown)', async () => {
+    // Routine in production: the user blocked the bot, so the error reply also 403s. This
+    // must be swallowed, not propagated (propagation → unhandledRejection → process exit).
+    const warn = vi.fn();
+    const ctx = {
+      log: { error: vi.fn(), warn, info: vi.fn() },
+      reply: vi.fn(async () => {
+        throw new Error('403: Forbidden: bot was blocked by the user');
+      }),
+    } as unknown as BotContext;
+
+    await expect(handleTelegramError(ctx, new Error('original boom'))).resolves.toBeUndefined();
+    expect(warn).toHaveBeenCalled(); // swallowed + logged, did not throw
   });
 });
