@@ -37,8 +37,9 @@ Unchanged from S1: `id`, `telegram_id bigint unique not null`, `username`, `firs
 Note: users are **platform-level**, not tenant-owned — one Telegram user can buy from many creators.
 
 ### 2. creators — the tenant table
-Unchanged from S1: `id`, `user_id FK unique`, `display_name`, `bio`, `status (active|suspended|pending)`, timestamps.
+Unchanged from S1: `id`, `user_id FK unique`, `display_name`, `bio`, `status (active|suspended|pending)`, timestamps. M7.0–M7.3 added `slug` (unique), `avatar_url`, `onboarding_completed_at`, `category`, `is_featured`.
 Every tenant-owned row below points here. MVP seeds one creator.
+Marketplace indexes (M7.3.1, migration `0006`): partial btree `(is_featured, created_at) WHERE` discoverable (active + slug + onboarded) for the list/sort; partial `(category)` for the category filter; and **pg_trgm GIN** indexes on `display_name`/`slug` for the ILIKE search (the `pg_trgm` extension is created in the same migration; these are hand-maintained in the migration, not the Drizzle snapshot).
 
 ### 3. drops (revised)
 
@@ -81,7 +82,7 @@ As S1 (`creator_id`, name, description, `price_stars > 0`, `duration_days > 0`, 
 
 ### 6. subscriptions
 As S1: `user_id`, `plan_id`, `creator_id` (tenant, denormalized), status `active|expired|cancelled`, `started_at`, `expires_at`, `cancelled_at`, timestamps.
-Constraints: partial unique `(user_id, plan_id) WHERE status='active'`; **`(user_id, creator_id, status)` index — this now serves the live premium entitlement check (ADR-011)**; `(status, expires_at)` for the sweep.
+Constraints: partial unique `(user_id, creator_id) WHERE status='active'` (M7.3.1, migration `0005` — one active subscription per **creator**, the entitlement grain per ADR-011; replaces the former per-plan `(user_id, plan_id)` index); **`(user_id, creator_id, status)` index — serves the live premium entitlement check (ADR-011)**; `(status, expires_at)` for the sweep.
 
 ### 7. purchases (revised: +creator_id)
 As S1 plus `creator_id uuid FK not null` (tenant key). Same XOR CHECK between drop_id/plan_id, same `payment_id` unique 1:1, `amount_stars` snapshot, status pending|completed|failed|refunded.
@@ -89,7 +90,7 @@ Indexes: `(user_id, created_at DESC)` for /library; `(creator_id, created_at DES
 
 ### 8. payments (revised: +creator_id)
 As S1 plus `creator_id uuid FK not null` — payments are tenant revenue and must be filterable per creator without joins (future payouts). Unchanged: provider enum `mock|telegram_stars` (renamed value `mock` — provider-neutral per revision §2), `provider_charge_id`, **unique `idempotency_key`**, `amount_stars > 0`, currency default 'XTR', status, `raw_payload jsonb`.
-Indexes: unique idempotency_key; `(provider, provider_charge_id)`; `(creator_id, status, created_at)`.
+Indexes: unique idempotency_key; `(provider, provider_charge_id)`; `(creator_id, status, created_at)`; partial `(created_at) WHERE status='pending'` (M7.3.1, migration `0006`) — serves the global stale-pending cleanup sweep, which filters status+created_at with no creator_id and so cannot use the composite index.
 
 ### 9. access_grants (simplified per ADR-011)
 Ledger for **pay-per-unlock purchases and manual comps only**. Subscription entitlement is computed live and never materialized here.

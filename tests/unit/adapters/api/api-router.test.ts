@@ -5,6 +5,8 @@
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import { createApiHandler } from '../../../../src/adapters/api/router.js';
+import type { ApiRateLimits } from '../../../../src/adapters/api/rate-limit.js';
+import { MemoryCacheProvider } from '../../../../src/adapters/cache/memory-cache.provider.js';
 import { AnalyticsService } from '../../../../src/core/services/analytics.service.js';
 import { AuthService } from '../../../../src/core/services/auth.service.js';
 import { CreatorService } from '../../../../src/core/services/creator.service.js';
@@ -28,11 +30,32 @@ afterEach(async () => {
   server = null;
 });
 
-const startWithWorld = async () => {
+// Generous by default so functional tests never trip the limiter; individual
+// rate-limit tests pass tiny buckets.
+const GENEROUS: ApiRateLimits = {
+  auth: { points: 10_000, windowSeconds: 60 },
+  public: { points: 10_000, windowSeconds: 60 },
+  authenticated: { points: 10_000, windowSeconds: 60 },
+};
+
+const startWithWorld = async (rateLimits: ApiRateLimits = GENEROUS) => {
   const world = createWorld();
-  const purchases = new PurchaseService(world.uow, new FakePaymentProvider(), world.access, world.audit, world.clock);
+  const purchases = new PurchaseService(
+    world.uow,
+    new FakePaymentProvider(),
+    world.access,
+    world.audit,
+    world.clock,
+  );
   const handler = createApiHandler({
-    auth: new AuthService(world.uow, new FakePasswordHasher(), new FakeSessionTokenService(), world.clock, world.audit, 720),
+    auth: new AuthService(
+      world.uow,
+      new FakePasswordHasher(),
+      new FakeSessionTokenService(),
+      world.clock,
+      world.audit,
+      720,
+    ),
     creators: new CreatorService(world.uow),
     drops: new DropService(world.uow, world.audit, world.clock),
     subscriptions: new SubscriptionService(world.uow, purchases, world.audit, world.clock),
@@ -41,11 +64,20 @@ const startWithWorld = async () => {
     discovery: new DiscoveryService(world.uow),
     content: new FakeContentProvider(world.clock),
     botUsername: 'demo_bot',
+    cache: new MemoryCacheProvider(world.clock),
+    rateLimits,
+    trustedProxyHops: 1,
     logger,
   });
   server = new HttpServer(
     { port: 0, healthPath: '/health', api: { prefix: '/api', handler } },
-    async () => ({ status: 'ok', version: 't', uptimeSeconds: 0, checks: { database: 'ok' }, latencyMs: 0 }),
+    async () => ({
+      status: 'ok',
+      version: 't',
+      uptimeSeconds: 0,
+      checks: { database: 'ok' },
+      latencyMs: 0,
+    }),
     logger,
   );
   await server.start();
@@ -95,12 +127,52 @@ describe('API auth + session', () => {
     expect(login.status).toBe(200);
   });
 
+  it('429s the per-IP auth bucket once exhausted, with a Retry-After header', async () => {
+    const { base } = await startWithWorld({
+      auth: { points: 2, windowSeconds: 60 },
+      public: { points: 10_000, windowSeconds: 60 },
+      authenticated: { points: 10_000, windowSeconds: 60 },
+    });
+    const badLogin = () =>
+      call(base, 'POST', '/api/auth/login', { body: { email: 'x@example.com', password: 'nope' } });
+    expect((await badLogin()).status).toBe(401); // 1st — allowed (bad creds)
+    expect((await badLogin()).status).toBe(401); // 2nd — allowed
+    const blocked = await badLogin(); // 3rd — over the limit
+    expect(blocked.status).toBe(429);
+    expect(blocked.headers.get('retry-after')).toBe('60');
+  });
+
+  it('429s the per-creator authenticated bucket once exhausted', async () => {
+    const { base } = await startWithWorld({
+      auth: { points: 10_000, windowSeconds: 60 },
+      public: { points: 10_000, windowSeconds: 60 },
+      authenticated: { points: 2, windowSeconds: 60 },
+    });
+    const { token } = await register(base); // register uses the (generous) auth bucket
+    expect((await call(base, 'GET', '/api/profile', { token })).status).toBe(200); // 1
+    expect((await call(base, 'GET', '/api/profile', { token })).status).toBe(200); // 2
+    expect((await call(base, 'GET', '/api/profile', { token })).status).toBe(429); // 3
+  });
+
+  it('429s the unauthenticated public marketplace bucket once exhausted', async () => {
+    const { base } = await startWithWorld({
+      auth: { points: 10_000, windowSeconds: 60 },
+      public: { points: 2, windowSeconds: 60 },
+      authenticated: { points: 10_000, windowSeconds: 60 },
+    });
+    expect((await call(base, 'GET', '/api/public/creators')).status).toBe(200); // 1
+    expect((await call(base, 'GET', '/api/public/categories')).status).toBe(200); // 2
+    expect((await call(base, 'GET', '/api/public/creators/featured')).status).toBe(429); // 3
+  });
+
   it('unknown routes 404, bad login 401', async () => {
     const base = await start();
     expect((await call(base, 'GET', '/api/nope', { token: 'x' })).status).toBe(401); // auth first
     const { token } = await register(base);
     expect((await call(base, 'GET', '/api/nope', { token })).status).toBe(404);
-    const bad = await call(base, 'POST', '/api/auth/login', { body: { email: 'ada@example.com', password: 'wrong' } });
+    const bad = await call(base, 'POST', '/api/auth/login', {
+      body: { email: 'ada@example.com', password: 'wrong' },
+    });
     expect(bad.status).toBe(401);
   });
 });
@@ -141,7 +213,9 @@ describe('API content + plans + analytics', () => {
     const plans = await (await call(base, 'GET', '/api/plans', { token })).json();
     expect((plans as unknown[]).length).toBe(1);
 
-    const summary = (await (await call(base, 'GET', '/api/analytics/summary', { token })).json()) as {
+    const summary = (await (
+      await call(base, 'GET', '/api/analytics/summary', { token })
+    ).json()) as {
       publishedDrops: number;
       activePlans: number;
     };
@@ -163,8 +237,14 @@ describe('API content + plans + analytics', () => {
     expect(s1.nextStep).toBe('plan');
     expect(s1.completed).toBe(false);
 
-    await call(base, 'POST', '/api/plans', { token, body: { name: 'Gold', priceStars: 500, durationDays: 30 } });
-    await call(base, 'POST', '/api/content/drops', { token, body: { title: 'D', accessType: 'free' } });
+    await call(base, 'POST', '/api/plans', {
+      token,
+      body: { name: 'Gold', priceStars: 500, durationDays: 30 },
+    });
+    await call(base, 'POST', '/api/content/drops', {
+      token,
+      body: { title: 'D', accessType: 'free' },
+    });
 
     const s2 = (await (await call(base, 'GET', '/api/onboarding', { token })).json()) as {
       steps: { profile: boolean; plan: boolean; content: boolean };
@@ -186,25 +266,57 @@ describe('API content + plans + analytics', () => {
     const { base, world } = await startWithWorld();
     const now = world.clock.now();
     const repos = world.store.repos;
-    const alpha = await repos.creators.create({ displayName: 'Alpha', slug: 'alpha', category: 'Music', isFeatured: true, onboardingCompletedAt: now, status: 'active' });
-    await repos.creators.create({ displayName: 'Beta', slug: 'beta', category: 'Art', onboardingCompletedAt: now, status: 'active' });
-    await repos.drops.create({ creatorId: alpha.id, title: 'Song', accessType: 'free', priceStars: null, status: 'published', publishedAt: now });
+    const alpha = await repos.creators.create({
+      displayName: 'Alpha',
+      slug: 'alpha',
+      category: 'Music',
+      isFeatured: true,
+      onboardingCompletedAt: now,
+      status: 'active',
+    });
+    await repos.creators.create({
+      displayName: 'Beta',
+      slug: 'beta',
+      category: 'Art',
+      onboardingCompletedAt: now,
+      status: 'active',
+    });
+    await repos.drops.create({
+      creatorId: alpha.id,
+      title: 'Song',
+      accessType: 'free',
+      priceStars: null,
+      status: 'published',
+      publishedAt: now,
+    });
 
-    const list = (await (await call(base, 'GET', '/api/public/creators')).json()) as { creators: { slug: string }[] };
+    const list = (await (await call(base, 'GET', '/api/public/creators')).json()) as {
+      creators: { slug: string }[];
+    };
     expect(list.creators.map((c) => c.slug)).toEqual(['alpha', 'beta']);
 
-    const search = (await (await call(base, 'GET', '/api/public/creators?query=alph')).json()) as { creators: { slug: string }[] };
+    const search = (await (await call(base, 'GET', '/api/public/creators?query=alph')).json()) as {
+      creators: { slug: string }[];
+    };
     expect(search.creators.map((c) => c.slug)).toEqual(['alpha']);
 
-    const featured = (await (await call(base, 'GET', '/api/public/creators/featured')).json()) as { creators: { slug: string }[] };
+    const featured = (await (await call(base, 'GET', '/api/public/creators/featured')).json()) as {
+      creators: { slug: string }[];
+    };
     expect(featured.creators.map((c) => c.slug)).toEqual(['alpha']);
 
-    const cats = (await (await call(base, 'GET', '/api/public/categories')).json()) as { categories: string[] };
+    const cats = (await (await call(base, 'GET', '/api/public/categories')).json()) as {
+      categories: string[];
+    };
     expect(cats.categories).toEqual(['Art', 'Music']);
 
     const profileRes = await call(base, 'GET', '/api/public/creators/alpha');
     expect(profileRes.status).toBe(200);
-    const profile = (await profileRes.json()) as { startParam: string; telegramUrl: string; drops: unknown[] };
+    const profile = (await profileRes.json()) as {
+      startParam: string;
+      telegramUrl: string;
+      drops: unknown[];
+    };
     expect(profile.startParam).toBe('c_alpha');
     expect(profile.telegramUrl).toBe('https://t.me/demo_bot?start=c_alpha'); // botUsername wired
     expect(profile.drops.length).toBe(1);
@@ -226,7 +338,9 @@ describe('API content + plans + analytics', () => {
     expect((bDrops as unknown[]).length).toBe(0); // B sees none of A's drops
 
     // B cannot upload into A's drop
-    const aDrops = (await (await call(base, 'GET', '/api/content/drops', { token: a.token })).json()) as {
+    const aDrops = (await (
+      await call(base, 'GET', '/api/content/drops', { token: a.token })
+    ).json()) as {
       id: string;
     }[];
     const steal = await call(base, 'POST', `/api/content/drops/${aDrops[0]?.id}/assets`, {

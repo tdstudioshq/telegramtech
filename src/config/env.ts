@@ -53,9 +53,22 @@ const envSchema = z
     JOB_CLEANUP_INTERVAL: z.coerce.number().int().positive().default(30),
     PENDING_PAYMENT_TTL_MINUTES: z.coerce.number().int().positive().default(15),
 
-    // Rate limiting
+    // Rate limiting — Telegram bot (per Telegram user)
     RATE_LIMIT_POINTS: z.coerce.number().int().positive().default(20),
     RATE_LIMIT_WINDOW_SECONDS: z.coerce.number().int().positive().default(60),
+    // Rate limiting — JSON API (M7.3.1). Auth bucket: per client IP on login/register
+    // (a second per-email bucket also applies to login). Public bucket: per client IP
+    // on the unauthenticated marketplace reads. Authenticated bucket: per creator over
+    // the whole dashboard surface, including uploads.
+    API_AUTH_RATE_LIMIT_POINTS: z.coerce.number().int().positive().default(10),
+    API_AUTH_RATE_LIMIT_WINDOW_SECONDS: z.coerce.number().int().positive().default(60),
+    API_PUBLIC_RATE_LIMIT_POINTS: z.coerce.number().int().positive().default(60),
+    API_PUBLIC_RATE_LIMIT_WINDOW_SECONDS: z.coerce.number().int().positive().default(60),
+    API_RATE_LIMIT_POINTS: z.coerce.number().int().positive().default(120),
+    API_RATE_LIMIT_WINDOW_SECONDS: z.coerce.number().int().positive().default(60),
+    // Number of trusted appending reverse proxies in front of the app (Railway edge = 1).
+    // The real client IP is taken this many hops from the right of X-Forwarded-For.
+    API_TRUSTED_PROXY_HOPS: z.coerce.number().int().min(0).default(1),
   })
   .superRefine((env, ctx) => {
     if (env.BOT_MODE === 'webhook') {
@@ -81,6 +94,15 @@ const envSchema = z
         code: 'custom',
         path: ['BOT_MODE'],
         message: 'must be webhook when NODE_ENV=production (polling is dev-only)',
+      });
+    }
+    // Redis mode (M7.4) needs a connection string; it backs the shared cache AND the
+    // shared notification queue, which is what makes numReplicas>1 safe.
+    if (env.CACHE_PROVIDER === 'redis' && env.REDIS_URL === undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['REDIS_URL'],
+        message: 'required when CACHE_PROVIDER=redis',
       });
     }
   });

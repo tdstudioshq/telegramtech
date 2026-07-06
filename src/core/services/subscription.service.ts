@@ -44,6 +44,20 @@ export interface SubscribeOutcome {
 const DAY_MS = 24 * 60 * 60 * 1000;
 const addDays = (from: Date, days: number): Date => new Date(from.getTime() + days * DAY_MS);
 
+/**
+ * Raised inside the finalize transaction to force a rollback when a concurrent
+ * subscribe won the one-active-per-creator race (a different plan slipped in between
+ * our setup read and finalize). subscribe() maps it to a conflict Result.
+ */
+class ActiveSubscriptionConflict extends Error {}
+
+/** Postgres SQLSTATE 23505 (unique_violation), possibly wrapped by Drizzle in `cause`. */
+const isUniqueViolation = (error: unknown): boolean => {
+  const code =
+    (error as { code?: unknown }).code ?? (error as { cause?: { code?: unknown } }).cause?.code;
+  return code === '23505';
+};
+
 export class SubscriptionService {
   constructor(
     private readonly uow: UnitOfWork,
@@ -148,72 +162,92 @@ export class SubscriptionService {
       );
     }
 
-    return this.uow.run(async (repos, events) => {
-      const finalized = await this.purchases.finalizeSuccess(repos, events, {
-        payment: setup.payment,
-        purchase: setup.purchase,
-        correlationId: input.correlationId,
-        confirmation,
-      });
+    try {
+      return await this.uow.run(async (repos, events) => {
+        const finalized = await this.purchases.finalizeSuccess(repos, events, {
+          payment: setup.payment,
+          purchase: setup.purchase,
+          correlationId: input.correlationId,
+          confirmation,
+        });
 
-      const now = this.clock.now();
-      const existing = await repos.subscriptions.findActiveForUserAndCreator(
-        input.userId,
-        setup.plan.creatorId,
-      );
-
-      let subscription: Subscription;
-      let renewed: boolean;
-      if (existing !== null) {
-        const base = existing.expiresAt > now ? existing.expiresAt : now;
-        subscription = await repos.subscriptions.renew(
-          existing.id,
-          addDays(base, setup.plan.durationDays),
+        const now = this.clock.now();
+        const existing = await repos.subscriptions.findActiveForUserAndCreator(
+          input.userId,
+          setup.plan.creatorId,
         );
-        renewed = true;
-        await this.audit.record(repos, {
-          creatorId: subscription.creatorId,
-          action: 'subscription.renewed',
-          entityType: 'subscription',
-          entityId: subscription.id,
-          actorType: 'user',
-          actorUserId: input.userId,
-          correlationId: input.correlationId,
-          context: { planId: setup.plan.id, expiresAt: subscription.expiresAt.toISOString() },
-        });
-      } else {
-        subscription = await repos.subscriptions.create({
-          userId: input.userId,
-          planId: setup.plan.id,
-          creatorId: setup.plan.creatorId,
-          status: 'active',
-          startedAt: now,
-          expiresAt: addDays(now, setup.plan.durationDays),
-        });
-        renewed = false;
-        await this.audit.record(repos, {
-          creatorId: subscription.creatorId,
-          action: 'subscription.activated',
-          entityType: 'subscription',
-          entityId: subscription.id,
-          actorType: 'user',
-          actorUserId: input.userId,
-          correlationId: input.correlationId,
-          context: { planId: setup.plan.id, expiresAt: subscription.expiresAt.toISOString() },
-        });
-      }
 
-      events.raise({
-        type: 'SubscriptionActivated',
-        subscriptionId: subscription.id,
-        userId: input.userId,
-        creatorId: subscription.creatorId,
-        planId: setup.plan.id,
-        expiresAt: subscription.expiresAt,
-        occurredAt: now,
+        let subscription: Subscription;
+        let renewed: boolean;
+        if (existing !== null) {
+          // A concurrent subscribe may have activated a DIFFERENT plan for this creator
+          // between our setup read and here — never extend the wrong plan (M7.3.1).
+          if (existing.planId !== setup.plan.id) throw new ActiveSubscriptionConflict();
+          const base = existing.expiresAt > now ? existing.expiresAt : now;
+          subscription = await repos.subscriptions.renew(
+            existing.id,
+            addDays(base, setup.plan.durationDays),
+          );
+          renewed = true;
+          await this.audit.record(repos, {
+            creatorId: subscription.creatorId,
+            action: 'subscription.renewed',
+            entityType: 'subscription',
+            entityId: subscription.id,
+            actorType: 'user',
+            actorUserId: input.userId,
+            correlationId: input.correlationId,
+            context: { planId: setup.plan.id, expiresAt: subscription.expiresAt.toISOString() },
+          });
+        } else {
+          subscription = await repos.subscriptions.create({
+            userId: input.userId,
+            planId: setup.plan.id,
+            creatorId: setup.plan.creatorId,
+            status: 'active',
+            startedAt: now,
+            expiresAt: addDays(now, setup.plan.durationDays),
+          });
+          renewed = false;
+          await this.audit.record(repos, {
+            creatorId: subscription.creatorId,
+            action: 'subscription.activated',
+            entityType: 'subscription',
+            entityId: subscription.id,
+            actorType: 'user',
+            actorUserId: input.userId,
+            correlationId: input.correlationId,
+            context: { planId: setup.plan.id, expiresAt: subscription.expiresAt.toISOString() },
+          });
+        }
+
+        events.raise({
+          type: 'SubscriptionActivated',
+          subscriptionId: subscription.id,
+          userId: input.userId,
+          creatorId: subscription.creatorId,
+          planId: setup.plan.id,
+          expiresAt: subscription.expiresAt,
+          occurredAt: now,
+        });
+        return ok({ subscription, ...finalized, renewed });
       });
-      return ok({ subscription, ...finalized, renewed });
-    });
+    } catch (error) {
+      // A concurrent subscribe won the one-active-per-creator race: either the DB unique
+      // index rejected our insert (SQLSTATE 23505) or the renew guard aborted. Both roll
+      // the whole transaction back (payment reverts to pending → swept to failed), so we
+      // surface a graceful conflict instead of a 500.
+      if (error instanceof ActiveSubscriptionConflict || isUniqueViolation(error)) {
+        return err(
+          appError(
+            'conflict',
+            'You already have an active subscription with this creator. Please try again.',
+            { userId: input.userId, creatorId: setup.plan.creatorId },
+          ),
+        );
+      }
+      throw error;
+    }
   }
 
   /** Client read path (M7.0): the current creator's active plans, so a channel can
@@ -232,10 +266,18 @@ export class SubscriptionService {
     const name = input.name.trim();
     if (name.length === 0) return err(appError('validation', 'Plan name is required.'));
     if (!Number.isInteger(input.priceStars) || input.priceStars <= 0) {
-      return err(appError('validation', 'Price must be a positive whole number of Stars.', { priceStars: input.priceStars }));
+      return err(
+        appError('validation', 'Price must be a positive whole number of Stars.', {
+          priceStars: input.priceStars,
+        }),
+      );
     }
     if (!Number.isInteger(input.durationDays) || input.durationDays <= 0) {
-      return err(appError('validation', 'Duration must be a positive number of days.', { durationDays: input.durationDays }));
+      return err(
+        appError('validation', 'Duration must be a positive number of days.', {
+          durationDays: input.durationDays,
+        }),
+      );
     }
     return this.uow.run(async (repos) => {
       const creator = await CreatorService.requireActive(repos, input.creatorId);

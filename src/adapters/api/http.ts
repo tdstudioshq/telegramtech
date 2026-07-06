@@ -4,7 +4,7 @@
  * API all get consistent errors. No framework — Node http only.
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import type { AppError, AppErrorCode } from '../../shared/app-error.js';
+import { appError, type AppError, type AppErrorCode } from '../../shared/app-error.js';
 import type { Result } from '../../shared/result.js';
 
 const MAX_BODY_BYTES = 25 * 1024 * 1024; // 25 MB (covers dashboard media uploads)
@@ -35,7 +35,18 @@ export const sendJson = (res: ServerResponse, status: number, body: unknown): vo
 };
 
 export const sendError = (res: ServerResponse, error: AppError): void =>
-  sendJson(res, STATUS_BY_CODE[error.code], { error: { code: error.code, message: error.message } });
+  sendJson(res, STATUS_BY_CODE[error.code], {
+    error: { code: error.code, message: error.message },
+  });
+
+/** 429 with a Retry-After header (set before writeHead so it survives the merge). */
+export const sendRateLimited = (res: ServerResponse, retryAfterSeconds: number): void => {
+  res.setHeader('retry-after', String(retryAfterSeconds));
+  sendError(
+    res,
+    appError('rate_limited', 'Too many requests. Please slow down and try again in a moment.'),
+  );
+};
 
 /** Send `result.value` (status `okStatus`) or map its AppError to the right status. */
 export const sendResult = <T>(

@@ -1,7 +1,7 @@
 export const APP_NAME = 'creator-platform';
 
 /** Release version — kept in sync with package.json; surfaced by the health endpoint. */
-export const APP_VERSION = '0.1.0-mvp';
+export const APP_VERSION = '0.2.1-platform';
 
 /** HTTP path Railway's health check probes (must match railway.json healthcheckPath). */
 export const HEALTH_PATH = '/health';

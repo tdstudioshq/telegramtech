@@ -12,13 +12,13 @@ Gate for tagging `v0.1.0-mvp`. Pair with `DEPLOYMENT.md`.
 | Webhook auth | `WEBHOOK_SECRET_TOKEN` set on `setWebhook` and verified by telegraf on every update; server starts listening before `setWebhook`. | ✅ |
 | Transport | Railway terminates TLS; webhook URL is HTTPS. Content moves only via short-lived server-signed URLs from a **private** bucket; the service-role key is used only by the storage adapter. | ✅ |
 | Input validation | Every inbound Telegram payload is Zod-validated at the handler boundary; callback data is parsed, not trusted. | ✅ |
-| Rate limiting | Per-user limiter via CacheProvider (`RATE_LIMIT_POINTS`/`WINDOW`). Per-process (single replica) — debt #1. | ✅ (MVP) |
-| Tenancy | `creator_id` on every tenant-owned row; repositories always filter by it. RLS deferred (debt #2) — safe while the bot is the only client. | ✅ (MVP) |
-| Money integrity | Integer Stars only; every money/access mutation writes an audit row in the same transaction; events dispatch only after commit. | ✅ |
+| Rate limiting | **Two channels, both via CacheProvider.** Telegram: per-user limiter (`RATE_LIMIT_POINTS`/`WINDOW`). JSON API (M7.3.1): per-IP (+per-email) on `login`/`register` before scrypt runs (`API_AUTH_RATE_LIMIT_*`), per-IP on public marketplace reads (`API_PUBLIC_RATE_LIMIT_*`), and per-creator over all authenticated routes incl. uploads (`API_RATE_LIMIT_*`), returning 429 + `Retry-After`. Client IP is the rightmost `X-Forwarded-For` hop (validated as an IP) per `API_TRUSTED_PROXY_HOPS=1` (Railway edge), so a spoofed leftmost XFF can't mint a fresh bucket. Per-process (single replica) — debt #1. | ✅ |
+| Tenancy | `creator_id` on every tenant-owned row; repositories always filter by it. RLS deferred (debt #2) — interim safety = both channels route only through tenant-filtering core services. | ✅ (MVP) |
+| Money integrity | Integer Stars only; every money/access mutation writes an audit row in the same transaction; events dispatch only after commit. One active subscription per creator is DB-enforced (M7.3.1) — concurrent distinct-plan subscribes cannot double-charge. | ✅ |
 | SQL | Drizzle parameterized queries only; the one jsonb merge is a bound param, never interpolated. Pooler runs `prepare:false`. | ✅ |
 | Health endpoint | Unauthenticated but exposes no secrets/tenant data (status, version, uptime, db ok/error). | ✅ |
 | Error surface | `Result<T, AppError>` → user-safe messages; internals logged, never sent to users. | ✅ |
-| DoS / abuse | Rate limiter + single-writer bot. No file uploads from users in MVP. | ✅ (MVP) |
+| DoS / abuse | Rate limiters on both channels (Telegram + API, M7.3.1). **Authenticated dashboard uploads exist** (per-drop media, 25 MB cap, streaming size enforcement) — gated by ownership checks + the per-creator API limiter; not open to anonymous users. | ✅ |
 
 **No blocking security findings.** Accepted, documented risks: per-process cache (debt #1), no RLS (debt #2), non-durable in-process events (debt #6), mock payments at launch (Q4 / MVP posture — no real Stars charged).
 

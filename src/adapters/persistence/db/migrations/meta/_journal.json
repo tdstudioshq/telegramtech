@@ -36,6 +36,20 @@
       "when": 1783275862390,
       "tag": "0004_first_sharon_ventura",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1783315716477,
+      "tag": "0005_known_celestials",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1783316266058,
+      "tag": "0006_flashy_shocker",
+      "breakpoints": true
     }
   ]
 }

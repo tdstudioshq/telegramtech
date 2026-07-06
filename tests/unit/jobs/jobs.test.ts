@@ -4,6 +4,7 @@
  * to the notification handler to prove no duplicate notifications on rerun.
  */
 import { describe, expect, it } from 'vitest';
+import { InMemoryNotificationQueue } from '../../../src/adapters/notifications/in-memory-notification-queue.js';
 import { NotificationEngine } from '../../../src/core/engines/notification.engine.js';
 import { paymentFailedNotification } from '../../../src/core/events/handlers/notification.handler.js';
 import { PurchaseService } from '../../../src/core/services/purchase.service.js';
@@ -60,9 +61,9 @@ describe('notification job', () => {
   it('drains queued intents through the notifier', async () => {
     const world = createWorld();
     const notifier = new FakeNotifier();
-    const engine = new NotificationEngine(world.uow, notifier);
+    const engine = new NotificationEngine(world.uow, notifier, new InMemoryNotificationQueue());
     const user = await givenUser(world);
-    engine.enqueue({ userId: user.id, notification: { kind: 'payment_failed', text: 'hi' } });
+    await engine.enqueue({ userId: user.id, notification: { kind: 'payment_failed', text: 'hi' } });
 
     const job = createNotificationJob(engine, cfg);
     const stats = await job.run(ctx());
@@ -75,9 +76,9 @@ describe('notification job', () => {
   it('never double-sends across reruns (empty queue on the second drain)', async () => {
     const world = createWorld();
     const notifier = new FakeNotifier();
-    const engine = new NotificationEngine(world.uow, notifier);
+    const engine = new NotificationEngine(world.uow, notifier, new InMemoryNotificationQueue());
     const user = await givenUser(world);
-    engine.enqueue({ userId: user.id, notification: { kind: 'payment_failed', text: 'hi' } });
+    await engine.enqueue({ userId: user.id, notification: { kind: 'payment_failed', text: 'hi' } });
 
     const job = createNotificationJob(engine, cfg);
     await job.run(ctx());
@@ -126,7 +127,7 @@ describe('cleanup job', () => {
   it('produces exactly one notification even when run twice (no duplicates)', async () => {
     const world = createWorld();
     const notifier = new FakeNotifier();
-    const engine = new NotificationEngine(world.uow, notifier);
+    const engine = new NotificationEngine(world.uow, notifier, new InMemoryNotificationQueue());
     world.dispatcher.register('PaymentFailed', 'notify', paymentFailedNotification(engine));
     const purchases = withPurchases(world);
     await seedStalePending(world, purchases);

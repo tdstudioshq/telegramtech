@@ -15,7 +15,13 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 const setup = (world: TestWorld = createWorld()) => {
   const provider = new FakePaymentProvider();
-  const purchases = new PurchaseService(world.uow, provider, world.access, world.audit, world.clock);
+  const purchases = new PurchaseService(
+    world.uow,
+    provider,
+    world.access,
+    world.audit,
+    world.clock,
+  );
   const service = new SubscriptionService(world.uow, purchases, world.audit, world.clock);
   return { world, provider, purchases, service };
 };
@@ -28,7 +34,11 @@ describe('SubscriptionService.subscribe', () => {
     const user = await givenUser(world);
     const now = world.clock.now();
 
-    const result = await service.subscribe({ userId: user.id, planId: plan.id, idempotencyKey: 's1' });
+    const result = await service.subscribe({
+      userId: user.id,
+      planId: plan.id,
+      idempotencyKey: 's1',
+    });
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -67,9 +77,17 @@ describe('SubscriptionService.subscribe', () => {
     const plan = await givenPlan(world, creator, 30);
     const user = await givenUser(world);
 
-    const first = await service.subscribe({ userId: user.id, planId: plan.id, idempotencyKey: 'a' });
+    const first = await service.subscribe({
+      userId: user.id,
+      planId: plan.id,
+      idempotencyKey: 'a',
+    });
     world.clock.advanceDays(10); // renew mid-term
-    const second = await service.subscribe({ userId: user.id, planId: plan.id, idempotencyKey: 'b' });
+    const second = await service.subscribe({
+      userId: user.id,
+      planId: plan.id,
+      idempotencyKey: 'b',
+    });
 
     expect(first.ok && second.ok).toBe(true);
     if (!first.ok || !second.ok) return;
@@ -91,13 +109,90 @@ describe('SubscriptionService.subscribe', () => {
 
     await service.subscribe({ userId: user.id, planId: plan.id, idempotencyKey: 'a' });
     world.clock.advanceDays(45); // lapsed, sweep hasn't run
-    const renewal = await service.subscribe({ userId: user.id, planId: plan.id, idempotencyKey: 'b' });
+    const renewal = await service.subscribe({
+      userId: user.id,
+      planId: plan.id,
+      idempotencyKey: 'b',
+    });
 
     expect(renewal.ok).toBe(true);
     if (!renewal.ok) return;
     expect(renewal.value.subscription.expiresAt.getTime()).toBe(
       world.clock.now().getTime() + 30 * DAY_MS,
     );
+  });
+
+  it('rejects a second active plan for the same creator (one active per creator)', async () => {
+    const { world, service } = setup();
+    const creator = await givenCreator(world);
+    const plan1 = await givenPlan(world, creator, 30, 500);
+    const plan2 = await givenPlan(world, creator, 30, 700);
+    const user = await givenUser(world);
+
+    const first = await service.subscribe({
+      userId: user.id,
+      planId: plan1.id,
+      idempotencyKey: 'a',
+    });
+    expect(first.ok).toBe(true);
+
+    const second = await service.subscribe({
+      userId: user.id,
+      planId: plan2.id,
+      idempotencyKey: 'b',
+    });
+    expect(second.ok).toBe(false);
+    if (second.ok) return;
+    expect(second.error.code).toBe('conflict');
+    // the second attempt never charged (rejected before beginAttempt) and left no new row
+    expect(world.store.state.payments).toHaveLength(1);
+    expect(world.store.state.subscriptions.filter((s) => s.status === 'active')).toHaveLength(1);
+  });
+
+  it('TX2 conflict: a different-plan sub racing in during the provider call rolls back the charge', async () => {
+    // Drive the ActiveSubscriptionConflict branch deterministically: the provider's
+    // confirm() runs between the setup (TX1) and finalize (TX2) transactions — the exact
+    // TOCTOU window — so injecting an active plan-A sub there makes TX2's re-read see a
+    // DIFFERENT plan than the plan-B being finalized. The whole finalize tx must roll back
+    // (no double-charge, no wrong-plan renewal) and subscribe() must return a conflict.
+    const world = createWorld();
+    const creator = await givenCreator(world);
+    const planA = await givenPlan(world, creator, 30, 500);
+    const planB = await givenPlan(world, creator, 30, 700);
+    const user = await givenUser(world);
+
+    const racingProvider = new FakePaymentProvider();
+    const originalConfirm = racingProvider.confirm.bind(racingProvider);
+    racingProvider.confirm = async (intent) => {
+      // A concurrent subscribe committed an active plan-A sub for this (user, creator).
+      await world.store.repos.subscriptions.create({
+        userId: user.id,
+        planId: planA.id,
+        creatorId: creator.id,
+        status: 'active',
+        startedAt: world.clock.now(),
+        expiresAt: new Date(world.clock.now().getTime() + 30 * DAY_MS),
+      });
+      return originalConfirm(intent);
+    };
+    const purchases = new PurchaseService(world.uow, racingProvider, world.access, world.audit, world.clock);
+    const service = new SubscriptionService(world.uow, purchases, world.audit, world.clock);
+
+    const result = await service.subscribe({ userId: user.id, planId: planB.id, idempotencyKey: 'race' });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe('conflict');
+    // exactly one active sub survives — the racing plan-A, untouched (not extended)
+    const active = world.store.state.subscriptions.filter((s) => s.status === 'active');
+    expect(active).toHaveLength(1);
+    expect(active[0]?.planId).toBe(planA.id);
+    expect(active[0]?.expiresAt.getTime()).toBe(world.clock.now().getTime() + 30 * DAY_MS); // NOT extended by plan-B
+    // the loser's plan-B payment rolled back to pending (never left succeeded) — no double charge
+    expect(world.store.state.payments.every((p) => p.status !== 'succeeded')).toBe(true);
+    // and no after-commit events leaked from the rolled-back finalize
+    expect(world.uow.dispatchedEvents.map((e) => e.type)).not.toContain('PurchaseCompleted');
+    expect(world.uow.dispatchedEvents.map((e) => e.type)).not.toContain('SubscriptionActivated');
   });
 
   it('payment failure leaves no subscription and raises PaymentFailed', async () => {
@@ -107,7 +202,11 @@ describe('SubscriptionService.subscribe', () => {
     const user = await givenUser(world);
     provider.failNext('declined');
 
-    const result = await service.subscribe({ userId: user.id, planId: plan.id, idempotencyKey: 's' });
+    const result = await service.subscribe({
+      userId: user.id,
+      planId: plan.id,
+      idempotencyKey: 's',
+    });
 
     expect(result.ok).toBe(false);
     if (result.ok) return;
@@ -123,9 +222,17 @@ describe('SubscriptionService.subscribe', () => {
     const plan = await givenPlan(world, creator);
     const user = await givenUser(world);
 
-    const first = await service.subscribe({ userId: user.id, planId: plan.id, idempotencyKey: 'dup' });
+    const first = await service.subscribe({
+      userId: user.id,
+      planId: plan.id,
+      idempotencyKey: 'dup',
+    });
     const calls = provider.calls.length;
-    const replay = await service.subscribe({ userId: user.id, planId: plan.id, idempotencyKey: 'dup' });
+    const replay = await service.subscribe({
+      userId: user.id,
+      planId: plan.id,
+      idempotencyKey: 'dup',
+    });
 
     expect(first.ok && replay.ok).toBe(true);
     if (!first.ok || !replay.ok) return;
@@ -147,7 +254,11 @@ describe('SubscriptionService.subscribe', () => {
     });
     const user = await givenUser(world);
 
-    const result = await service.subscribe({ userId: user.id, planId: retired.id, idempotencyKey: 'k' });
+    const result = await service.subscribe({
+      userId: user.id,
+      planId: retired.id,
+      idempotencyKey: 'k',
+    });
 
     expect(result.ok).toBe(false);
     if (result.ok) return;
@@ -216,11 +327,19 @@ describe('SubscriptionService.expireLapsed — the sweep', () => {
     const creator = await givenCreator(world);
     const plan = await givenPlan(world, creator, 30);
     const user = await givenUser(world);
-    const first = await service.subscribe({ userId: user.id, planId: plan.id, idempotencyKey: 'a' });
+    const first = await service.subscribe({
+      userId: user.id,
+      planId: plan.id,
+      idempotencyKey: 'a',
+    });
     world.clock.advanceDays(31);
     await service.expireLapsed();
 
-    const second = await service.subscribe({ userId: user.id, planId: plan.id, idempotencyKey: 'b' });
+    const second = await service.subscribe({
+      userId: user.id,
+      planId: plan.id,
+      idempotencyKey: 'b',
+    });
 
     expect(first.ok && second.ok).toBe(true);
     if (!first.ok || !second.ok) return;

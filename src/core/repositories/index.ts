@@ -341,6 +341,11 @@ export interface AccessGrantRepository {
   findById(id: GrantId): Promise<AccessGrant | null>;
   /** Live = revoked_at IS NULL (the access predicate). */
   findLiveGrant(userId: UserId, dropId: DropId): Promise<AccessGrant | null>;
+  /**
+   * Batched live-grant lookup (M7.3.1): the live grants a user holds among `dropIds`,
+   * in ONE query — so /my_access resolves a whole catalog without an N+1 per drop.
+   */
+  findLiveGrantsForDrops(userId: UserId, dropIds: DropId[]): Promise<AccessGrant[]>;
   revoke(id: GrantId, at: Date): Promise<void>;
 }
 

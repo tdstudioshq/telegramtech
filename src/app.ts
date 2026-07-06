@@ -7,7 +7,11 @@ import { ScryptPasswordHasher } from './adapters/auth/scrypt-password-hasher.js'
 import { CryptoSessionTokenService } from './adapters/auth/crypto-session-token.js';
 import { MemoryCacheProvider } from './adapters/cache/memory-cache.provider.js';
 import { NoopCacheProvider } from './adapters/cache/noop-cache.provider.js';
+import { RedisCacheProvider } from './adapters/cache/redis-cache.provider.js';
+import { createRedisConnection } from './adapters/cache/redis-client.js';
 import { SupabaseStorageProvider } from './adapters/content/supabase-storage.provider.js';
+import { InMemoryNotificationQueue } from './adapters/notifications/in-memory-notification-queue.js';
+import { RedisNotificationQueue } from './adapters/notifications/redis-notification-queue.js';
 import { MockPaymentProvider } from './adapters/payments/mock-payment.provider.js';
 import { createDatabase } from './adapters/persistence/db/client.js';
 import { DrizzleUnitOfWork } from './adapters/persistence/db/unit-of-work.js';
@@ -44,6 +48,7 @@ import {
   subscriptionExpiredNotification,
 } from './core/events/handlers/notification.handler.js';
 import type { CacheProvider } from './core/ports/cache-provider.port.js';
+import type { NotificationQueue } from './core/ports/notification-queue.port.js';
 import type { Clock } from './core/ports/clock.port.js';
 import { AccessService } from './core/services/access.service.js';
 import { AnalyticsService } from './core/services/analytics.service.js';
@@ -86,7 +91,8 @@ export const createApplication = (env: Env, logger: Logger): Application => {
   const users = new UserService(uow, audit);
   const creators = new CreatorService(uow);
   const drops = new DropService(uow, audit, systemClock);
-  const cache = createCache(env, systemClock);
+  const cacheInfra = buildCacheInfra(env, systemClock);
+  const cache = cacheInfra.cache;
   const creatorContext = new CreatorContext(cache, creators, env.DEFAULT_CREATOR_SLUG);
   const paymentProvider = new MockPaymentProvider({
     delayMs: env.MOCK_PAYMENT_DELAY_MS,
@@ -124,7 +130,9 @@ export const createApplication = (env: Env, logger: Logger): Application => {
     systemClock,
   );
   const delivery = new DeliveryEngine(uow, access, content, transport, audit, systemClock);
-  const notifications = new NotificationEngine(uow, notifier);
+  // Storage behind the NotificationQueue port: in-process for memory/noop, Redis-shared
+  // for CACHE_PROVIDER=redis (M7.4) — the drain is correct at numReplicas>1 either way.
+  const notifications = new NotificationEngine(uow, notifier, cacheInfra.notificationQueue);
 
   registerEventHandlers(dispatcher, uow, audit, notifications);
 
@@ -157,7 +165,10 @@ export const createApplication = (env: Env, logger: Logger): Application => {
   // In webhook mode the update handler is built synchronously (no network) and mounted
   // on our HTTP server; setWebhook runs later, once the server is listening.
   const webhookRoute: WebhookRoute | undefined = isWebhook
-    ? { path: new URL(requireWebhookUrl(env)).pathname, handler: createTelegramWebhookHandler(bot, botConfig) }
+    ? {
+        path: new URL(requireWebhookUrl(env)).pathname,
+        handler: createTelegramWebhookHandler(bot, botConfig),
+      }
     : undefined;
   const apiHandler = createApiHandler({
     auth,
@@ -169,6 +180,22 @@ export const createApplication = (env: Env, logger: Logger): Application => {
     discovery,
     content,
     botUsername: env.BOT_USERNAME ?? null,
+    cache,
+    rateLimits: {
+      auth: {
+        points: env.API_AUTH_RATE_LIMIT_POINTS,
+        windowSeconds: env.API_AUTH_RATE_LIMIT_WINDOW_SECONDS,
+      },
+      public: {
+        points: env.API_PUBLIC_RATE_LIMIT_POINTS,
+        windowSeconds: env.API_PUBLIC_RATE_LIMIT_WINDOW_SECONDS,
+      },
+      authenticated: {
+        points: env.API_RATE_LIMIT_POINTS,
+        windowSeconds: env.API_RATE_LIMIT_WINDOW_SECONDS,
+      },
+    },
+    trustedProxyHops: env.API_TRUSTED_PROXY_HOPS,
     logger: logger.child({ module: 'api' }),
   });
   const httpServer = new HttpServer(
@@ -205,6 +232,7 @@ export const createApplication = (env: Env, logger: Logger): Application => {
         started = false;
         await scheduler.stop();
         await httpServer.stop();
+        await cacheInfra.close();
         throw error;
       }
     },
@@ -222,6 +250,9 @@ export const createApplication = (env: Env, logger: Logger): Application => {
       started = false;
       await scheduler.stop();
       await database.close();
+      // Close the shared Redis connection last, after the scheduler (job locks) and any
+      // in-flight cache work have quiesced.
+      await cacheInfra.close();
     },
   };
 };
@@ -229,7 +260,9 @@ export const createApplication = (env: Env, logger: Logger): Application => {
 /** WEBHOOK_URL is guaranteed present in webhook mode by env validation; guard defensively. */
 const requireWebhookUrl = (env: Env): string => {
   if (env.WEBHOOK_URL === undefined) {
-    throw new Error('WEBHOOK_URL is required in webhook mode (env validation should have caught this)');
+    throw new Error(
+      'WEBHOOK_URL is required in webhook mode (env validation should have caught this)',
+    );
   }
   return env.WEBHOOK_URL;
 };
@@ -272,15 +305,52 @@ const buildScheduler = (
   return scheduler;
 };
 
-const createCache = (env: Env, clock: Clock): CacheProvider => {
+interface CacheInfra {
+  readonly cache: CacheProvider;
+  readonly notificationQueue: NotificationQueue;
+  /** Release any external connection (Redis) on shutdown; no-op for in-process providers. */
+  close(): Promise<void>;
+}
+
+/**
+ * Build the cache + notification-queue pair (M7.4). Both share ONE Redis connection when
+ * CACHE_PROVIDER=redis, so rate limits / locks / creator-context sessions and the
+ * notification queue are all replica-shared. memory/noop keep the in-process pair.
+ */
+const buildCacheInfra = (env: Env, clock: Clock): CacheInfra => {
+  const noClose = async (): Promise<void> => undefined;
   switch (env.CACHE_PROVIDER) {
     case 'memory':
-      return new MemoryCacheProvider(clock);
+      return {
+        cache: new MemoryCacheProvider(clock),
+        notificationQueue: new InMemoryNotificationQueue(),
+        close: noClose,
+      };
     case 'noop':
-      return new NoopCacheProvider();
-    case 'redis':
-      throw new Error('CACHE_PROVIDER=redis is reserved and not implemented');
+      return {
+        cache: new NoopCacheProvider(),
+        notificationQueue: new InMemoryNotificationQueue(),
+        close: noClose,
+      };
+    case 'redis': {
+      const conn = createRedisConnection(requireRedisUrl(env));
+      return {
+        cache: new RedisCacheProvider(conn.client),
+        notificationQueue: new RedisNotificationQueue(conn.client),
+        close: () => conn.close(),
+      };
+    }
   }
+};
+
+/** REDIS_URL is guaranteed present in redis mode by env validation; guard defensively. */
+const requireRedisUrl = (env: Env): string => {
+  if (env.REDIS_URL === undefined) {
+    throw new Error(
+      'REDIS_URL is required when CACHE_PROVIDER=redis (env validation should have caught this)',
+    );
+  }
+  return env.REDIS_URL;
 };
 
 const registerEventHandlers = (

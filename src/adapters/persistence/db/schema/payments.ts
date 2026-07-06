@@ -25,6 +25,12 @@ export const payments = pgTable(
   (t) => [
     index('payments_provider_charge_idx').on(t.provider, t.providerChargeId),
     index('payments_creator_status_created_idx').on(t.creatorId, t.status, t.createdAt),
+    // Stale-pending cleanup sweep (M7.3.1): the sweep filters status='pending' AND
+    // created_at < cutoff with no creator_id, so the (creator_id, …) index can't serve it.
+    // This partial index turns the periodic sweep into a bounded range scan.
+    index('payments_stale_pending_idx')
+      .on(t.createdAt)
+      .where(sql`${t.status} = 'pending'`),
     check('payments_amount_positive', sql`${t.amountStars} > 0`),
   ],
 );

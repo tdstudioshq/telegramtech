@@ -2,7 +2,21 @@
  * Drizzle repository implementations (ADR-009) — the ONLY layer that touches
  * Drizzle. SQL in, domain types out; tenant filters per ADR-012.
  */
-import { and, asc, desc, eq, gt, ilike, isNotNull, isNull, lt, lte, or, sql } from 'drizzle-orm';
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gt,
+  ilike,
+  inArray,
+  isNotNull,
+  isNull,
+  lt,
+  lte,
+  or,
+  sql,
+} from 'drizzle-orm';
 import type {
   AccessGrantRepository,
   AuditRepository,
@@ -382,7 +396,9 @@ export class DrizzleSubscriptionPlanRepository implements SubscriptionPlanReposi
     return this.db
       .select()
       .from(subscriptionPlans)
-      .where(and(eq(subscriptionPlans.creatorId, creatorId), eq(subscriptionPlans.status, 'active')))
+      .where(
+        and(eq(subscriptionPlans.creatorId, creatorId), eq(subscriptionPlans.status, 'active')),
+      )
       .orderBy(asc(subscriptionPlans.createdAt));
   }
 
@@ -432,6 +448,9 @@ export class DrizzleSubscriptionRepository implements SubscriptionRepository {
     userId: UserId,
     creatorId: CreatorId,
   ): Promise<Subscription | null> {
+    // The one-active-per-creator unique index guarantees at most one row, but order
+    // by expires_at DESC so the read is deterministic even during the brief window a
+    // concurrent renew/expire leaves transient state (M7.3.1).
     return first(
       await this.db
         .select()
@@ -443,6 +462,7 @@ export class DrizzleSubscriptionRepository implements SubscriptionRepository {
             eq(subscriptions.status, 'active'),
           ),
         )
+        .orderBy(desc(subscriptions.expiresAt))
         .limit(1),
     );
   }
@@ -610,7 +630,10 @@ export class DrizzlePurchaseRepository implements PurchaseRepository {
       })
       .from(purchases)
       .where(and(eq(purchases.creatorId, creatorId), eq(purchases.status, 'completed')));
-    return { completedSales: rows[0]?.completedSales ?? 0, revenueStars: rows[0]?.revenueStars ?? 0 };
+    return {
+      completedSales: rows[0]?.completedSales ?? 0,
+      revenueStars: rows[0]?.revenueStars ?? 0,
+    };
   }
 }
 
@@ -639,6 +662,20 @@ export class DrizzleAccessGrantRepository implements AccessGrantRepository {
         )
         .limit(1),
     );
+  }
+
+  async findLiveGrantsForDrops(userId: UserId, dropIds: DropId[]): Promise<AccessGrant[]> {
+    if (dropIds.length === 0) return [];
+    return this.db
+      .select()
+      .from(accessGrants)
+      .where(
+        and(
+          eq(accessGrants.userId, userId),
+          inArray(accessGrants.dropId, dropIds),
+          isNull(accessGrants.revokedAt),
+        ),
+      );
   }
 
   async revoke(id: GrantId, at: Date): Promise<void> {

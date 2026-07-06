@@ -1,6 +1,8 @@
 /**
  * DATABASE.md rev 2.2 §6. The (user_id, creator_id, status) index serves the live
  * premium entitlement check (ADR-011); (status, expires_at) serves the sweep.
+ * The one-active-per-creator partial unique index DB-enforces the entitlement grain
+ * (ADR-021 / M7.3.1): a user may hold at most one active subscription per creator.
  */
 import { sql } from 'drizzle-orm';
 import { index, pgTable, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
@@ -31,9 +33,11 @@ export const subscriptions = pgTable(
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
-    // one active subscription per (user, plan) — DB-enforced
-    uniqueIndex('subscriptions_one_active_per_plan_uq')
-      .on(t.userId, t.planId)
+    // one active subscription per (user, creator) — DB-enforced (M7.3.1). Entitlement
+    // is per-creator (ADR-011), so this is the correct grain: it also subsumes the
+    // former per-plan guard, since a creator's plans are mutually exclusive when active.
+    uniqueIndex('subscriptions_one_active_per_creator_uq')
+      .on(t.userId, t.creatorId)
       .where(sql`${t.status} = 'active'`),
     index('subscriptions_entitlement_idx').on(t.userId, t.creatorId, t.status),
     index('subscriptions_sweep_idx').on(t.status, t.expiresAt),

@@ -117,4 +117,23 @@ describe('parseEnv', () => {
     });
     expect(result.ok).toBe(true);
   });
+
+  it('requires REDIS_URL when CACHE_PROVIDER=redis (M7.4)', () => {
+    const result = parseEnv({ ...validEnv, CACHE_PROVIDER: 'redis' });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.map((issue) => issue.key)).toContain('REDIS_URL');
+  });
+
+  it('accepts CACHE_PROVIDER=redis when REDIS_URL is present', () => {
+    const result = parseEnv({
+      ...validEnv,
+      CACHE_PROVIDER: 'redis',
+      REDIS_URL: 'redis://localhost:6379',
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.CACHE_PROVIDER).toBe('redis');
+    expect(result.value.REDIS_URL).toBe('redis://localhost:6379');
+  });
 });

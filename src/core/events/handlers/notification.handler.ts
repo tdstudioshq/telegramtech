@@ -11,7 +11,7 @@ import type { EventHandler } from '../dispatcher.js';
 
 export const paymentFailedNotification =
   (engine: NotificationEngine): EventHandler<'PaymentFailed'> =>
-  (event) => {
+  (event) =>
     engine.enqueue({
       userId: event.userId,
       notification: {
@@ -19,11 +19,10 @@ export const paymentFailedNotification =
         text: `Your payment of ${event.amountStars} ⭐ didn't go through — you have not been charged. Tap the button again to retry.`,
       },
     });
-  };
 
 export const subscriptionActivatedNotification =
   (engine: NotificationEngine): EventHandler<'SubscriptionActivated'> =>
-  (event) => {
+  (event) =>
     engine.enqueue({
       userId: event.userId,
       notification: {
@@ -31,11 +30,10 @@ export const subscriptionActivatedNotification =
         text: `Welcome aboard! Your premium access is active until ${event.expiresAt.toISOString().slice(0, 10)}.`,
       },
     });
-  };
 
 export const subscriptionExpiredNotification =
   (engine: NotificationEngine): EventHandler<'SubscriptionExpired'> =>
-  (event) => {
+  (event) =>
     engine.enqueue({
       userId: event.userId,
       notification: {
@@ -43,4 +41,3 @@ export const subscriptionExpiredNotification =
         text: 'Your premium access has expired. Renew any time to pick up right where you left off.',
       },
     });
-  };

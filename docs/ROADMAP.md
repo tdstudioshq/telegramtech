@@ -71,20 +71,41 @@
 
 ### M7.3 — Marketplace / discovery ✅ COMPLETE (committed 2026-07-05, validated by Tyler 2026-07-06)
 - [x] `discovery.service.ts` + `follow.service.ts`; public marketplace/search API routes (creators/featured/categories/profile)
-- [x] Bot-side `/discover`/`/search`/`/follow` commands
-- [x] Search indexes (pg_trgm/GIN) + human validation
+- [x] Bot-side `/follow` command
+- [ ] Bot-side `/discover`/`/search` commands — **NOT built** (marketplace discovery is API-only; corrected in M7.3.1 audit)
+- [ ] Search indexes (pg_trgm/GIN) — **were NOT built at M7.3** (marketplace ran unindexed seq-scans); **delivered in M7.3.1** (migration `0006`)
 
-### M7.4–M7.8 — Redis/scale · real Stars + payouts · admin/ops · dedicated bots · public API/channels
-- [ ] Not started. **M7.4 (Redis + horizontal scaling) is the next undelivered milestone** — plan → Tyler approval → build, per the project's per-milestone rhythm.
+### M7.3.1 — Platform hardening ✅ COMPLETE (post-audit, this milestone)
+Close every HIGH/MEDIUM issue from the whole-repo architecture audit before Redis/scale. Additive + boundary-preserving; no redesign.
+- [x] **API rate limiting** — CacheProvider-backed per-IP limiter on `/api/auth/login`+`/register` (before scrypt) and per-creator on all authenticated routes incl. uploads; emits `rate_limited`→429 + `Retry-After` (`src/adapters/api/rate-limit.ts`)
+- [x] **Subscription correctness** — one-active-per-**creator** partial unique index (migration `0005`, replaces the per-plan index), deterministic `findActiveForUserAndCreator` (`ORDER BY expires_at DESC`), planId re-assert in finalize, unique-violation → graceful `conflict`; concurrent-subscribe regression test
+- [x] **Notification queue port** — `NotificationQueue` port + `InMemoryNotificationQueue` adapter (M7.4 can drop in a shared/durable impl with no core change). Note: distributed **drain** under the shared job lock is still M7.4 scope (see debt #14)
+- [x] **Marketplace indexes** — pg_trgm GIN on display_name/slug + partial btree for the discoverable() predicate/sort + partial index for the stale-pending payment sweep (migration `0006`)
+- [x] **`/my_access` N+1 removed** — `AccessService.resolveAccessForDrops` batches a whole catalog into one transaction (one sub-check per creator + one grants query)
+- [x] **ESLint boundary gaps closed** — every `adapters/*` subdir is an isolation target, `server/` zoned against core/shared/adapters, `@supabase`/`telegraf`/`drizzle-orm` confined to their owning adapter; guard test asserts no adapter can slip the net
+- [x] **Version + doc reconciliation** — `APP_VERSION`/package.json → `0.2.1`; this ROADMAP, PROJECT-MEMORY, CLAUDE.md, LAUNCH_CHECKLIST reconciled with the code
+
+### M7.4 — Redis + horizontal scaling ✅ CODE COMPLETE (awaiting review/commit + gated deploy)
+Lift the single-replica ceiling: shared rate limits + distributed job locks + shared notification queue across replicas. Additive, behind existing ports; no DB changes.
+- [x] **RedisCacheProvider** (`src/adapters/cache/redis-cache.provider.ts`) over ioredis — atomic `incr`+TTL-on-create (Lua), true distributed `withLock` (SET NX PX + fencing token + compare-and-del release), skip-not-wait semantics matching MemoryCacheProvider. Repays debt #1 (rate limits/locks/creator-context sessions now replica-shared).
+- [x] **RedisNotificationQueue** (`src/adapters/notifications/redis-notification-queue.ts`) — Redis list, atomic Lua drain (FIFO, no intent to two drains). **Repays debt #14** (the drain is now correct at `numReplicas>1`).
+- [x] Shared ioredis connection factory + graceful (idempotent) close; `buildCacheInfra` in `app.ts`; `REDIS_URL` required when `CACHE_PROVIDER=redis`; ioredis confined to cache+notifications adapters (ESLint + behavioral test).
+- [x] Resilience: bounded `commandTimeout` + **fail-open** rate limiting on both channels (a Redis outage degrades to no-throttle, never a total outage); bounded notification drain (matches the M5 sweeps).
+- [x] Tests: 11 real-Redis integration (incr atomicity, lock contention/skip/safe-release, queue FIFO/atomic-drain/concurrency) + unit (env rule, fail-open, boundaries). Adversarially reviewed.
+- [ ] **Deploy (owner-gated, NOT done):** provision Railway Redis → set `CACHE_PROVIDER=redis` + `REDIS_URL` → **then** raise `numReplicas` in `railway.json`. Raising `numReplicas` before Redis is wired reintroduces the per-replica bugs, so `railway.json` stays at `1` until the scaled deploy.
+- [ ] Redis-backed live settings (debt #4) deferred — needs a settings consumer first.
+
+### M7.5–M7.8 — real Stars + payouts · admin/ops · dedicated bots · public API/channels
+- [ ] Not started. Next undelivered milestone is **M7.5 (real Telegram Stars + payouts)** — plan → Tyler approval → build.
 
 ## Technical debt register
 
 | # | Debt | Trigger to repay |
 |---|---|---|
-| 1 | MemoryCacheProvider is per-process (rate limits, locks) | Second instance → RedisCacheProvider |
+| 1 | ~~MemoryCacheProvider is per-process (rate limits, locks, creator-context sessions)~~ | **RedisCacheProvider implemented (M7.4)** — repaid at code level; effective once `CACHE_PROVIDER=redis` in a deploy. Memory remains the dev/single-replica default. |
 | 2 | No RLS (still `isRLSEnabled: false` on all tables) | **TRIGGER TRIPPED 2026-07-05** — dashboard/API (`src/adapters/api/`) is now a live non-bot client. Interim safety = API routes only via tenant-filtering core services. Activate `creator_id` RLS (ADR-025) as defense-in-depth — schedule before write-heavy dashboard use / public API. |
 | 3 | Long-polling | Before real Stars → webhook + secret token |
-| 4 | Settings cached at boot | Dashboard live-edit requirement |
+| 4 | Settings subsystem is written/seeded but never read at runtime (no boot cache exists — the prior "cached at boot" wording was inaccurate; corrected M7.3.1). A reserved seam. | Implement a settings reader (maintenance-mode gate / welcome-message) — dashboard live-edit requirement |
 | 5 | In-process scheduler, lock is advisory | Multi-instance → Redis locks or pg_cron |
 | 6 | Domain events not durable (post-commit crash loses side effect) | External consumers/payouts → outbox table behind same dispatcher |
 | 7 | No auto-renew | Real Stars native subscriptions |
@@ -94,6 +115,7 @@
 | 11 | ~~Single-creator UX in bot (core is multi-tenant)~~ | **REPAID by M7.0** (slug deep-link routing + CreatorResolver; committed 2026-07-05, validated 2026-07-06). |
 | 12 | Manual QA, no e2e bot tests | Post-MVP if regressions bite |
 | 13 | cleanup.job does not prune orphaned storage / stale transport_cache (log-only stub) | ContentProvider gains a bucket-list capability + assets carry cache expiry metadata (schema/port change) |
+| 14 | ~~Notification-queue drain is per-replica → stranded intents at `numReplicas>1`~~ | **RedisNotificationQueue implemented (M7.4)** — the shared list + atomic drain make the lock-winner flush ALL replicas' intents; repaid at code level, effective on the redis deploy. (Durable outbox for crash-durability remains debt #6.) |
 
 ## Future integrations (not now)
 _Status note: the REST API + creator-dashboard backend and multi-creator routing below shipped under M7.0–M7.3 (committed 2026-07-05, validated 2026-07-06); the rest of this list remains future._

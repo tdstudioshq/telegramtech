@@ -9,7 +9,7 @@
  * oracle inside their own transaction.
  */
 import type { Drop } from '../../shared/entities.js';
-import type { DropId, UserId } from '../../shared/domain.js';
+import type { CreatorId, DropId, UserId } from '../../shared/domain.js';
 import type { Clock } from '../ports/clock.port.js';
 import type { Repositories, UnitOfWork } from '../repositories/index.js';
 
@@ -34,6 +34,67 @@ export class AccessService {
    */
   async resolveAccess(userId: UserId, dropId: DropId): Promise<AccessDecision> {
     return this.uow.run(async (repos) => this.canAccess(repos, userId, dropId));
+  }
+
+  /**
+   * Batched entitlement for a whole catalog (/my_access) — resolves every drop in a
+   * SINGLE transaction: at most one subscription check per creator (memoized) and one
+   * live-grants query for all pay-per-unlock drops, classified in memory from the drops
+   * already in hand. Returns decisions aligned to `drops`, identical to calling
+   * resolveAccess per drop, but without the N+1 transaction fan-out (M7.3.1).
+   * Non-published drops (defensive) resolve to the same drop_not_found as canAccess.
+   */
+  async resolveAccessForDrops(userId: UserId, drops: Drop[]): Promise<AccessDecision[]> {
+    if (drops.length === 0) return [];
+    return this.uow.run(async (repos) => {
+      const now = this.clock.now();
+
+      const subscriptionCache = new Map<CreatorId, boolean>();
+      const hasActiveSubscription = async (creatorId: CreatorId): Promise<boolean> => {
+        const cached = subscriptionCache.get(creatorId);
+        if (cached !== undefined) return cached;
+        const active = await repos.subscriptions.hasActiveForUserAndCreator(userId, creatorId, now);
+        subscriptionCache.set(creatorId, active);
+        return active;
+      };
+
+      const unlockDropIds = drops
+        .filter((d) => d.status === 'published' && d.accessType === 'pay_per_unlock')
+        .map((d) => d.id);
+      const liveGrants =
+        unlockDropIds.length > 0
+          ? await repos.accessGrants.findLiveGrantsForDrops(userId, unlockDropIds)
+          : [];
+      const unlockedDropIds = new Set(liveGrants.map((g) => g.dropId));
+
+      const decisions: AccessDecision[] = [];
+      for (const drop of drops) {
+        if (drop.status !== 'published') {
+          decisions.push({ allowed: false, reason: 'drop_not_found', drop: null });
+          continue;
+        }
+        switch (drop.accessType) {
+          case 'free':
+            decisions.push({ allowed: true, drop, basis: 'free' });
+            break;
+          case 'premium':
+            decisions.push(
+              (await hasActiveSubscription(drop.creatorId))
+                ? { allowed: true, drop, basis: 'subscription' }
+                : { allowed: false, reason: 'requires_subscription', drop },
+            );
+            break;
+          case 'pay_per_unlock':
+            decisions.push(
+              unlockedDropIds.has(drop.id)
+                ? { allowed: true, drop, basis: 'grant' }
+                : { allowed: false, reason: 'requires_unlock', drop },
+            );
+            break;
+        }
+      }
+      return decisions;
+    });
   }
 
   async canAccess(repos: Repositories, userId: UserId, dropId: DropId): Promise<AccessDecision> {

@@ -32,7 +32,14 @@ export const rateLimitMiddleware =
   (cache: CacheProvider, points: number, windowSeconds: number): MiddlewareFn<BotContext> =>
   async (ctx, next) => {
     if (ctx.from === undefined) return next();
-    const count = await cache.incr(`rate:telegram:${ctx.from.id}`, windowSeconds);
+    let count: number;
+    try {
+      count = await cache.incr(`rate:telegram:${ctx.from.id}`, windowSeconds);
+    } catch (error) {
+      // Fail OPEN: a cache outage must not silence the bot — allow the update through.
+      ctx.log.warn({ err: error }, 'rate-limit cache unavailable — allowing (fail-open)');
+      return next();
+    }
     if (count <= points) return next();
     ctx.log.warn({ count, points, windowSeconds }, 'telegram rate limit exceeded');
     await ctx.reply('Too many requests. Please wait a moment and try again.');

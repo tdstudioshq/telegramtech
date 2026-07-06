@@ -266,7 +266,9 @@ class MemoryCreatorRepository implements CreatorRepository {
       .filter((c) => {
         if (query.category !== undefined && c.category !== query.category) return false;
         if (q !== undefined && q !== '') {
-          return c.displayName.toLowerCase().includes(q) || (c.slug ?? '').toLowerCase().includes(q);
+          return (
+            c.displayName.toLowerCase().includes(q) || (c.slug ?? '').toLowerCase().includes(q)
+          );
         }
         return true;
       })
@@ -322,9 +324,7 @@ class MemoryFollowRepository implements FollowRepository {
   }
 
   async exists(userId: UserId, creatorId: CreatorId): Promise<boolean> {
-    return this.store.state.follows.some(
-      (f) => f.userId === userId && f.creatorId === creatorId,
-    );
+    return this.store.state.follows.some((f) => f.userId === userId && f.creatorId === creatorId);
   }
 
   async listCreatorsByUser(userId: UserId): Promise<Creator[]> {
@@ -537,11 +537,16 @@ class MemorySubscriptionRepository implements SubscriptionRepository {
       this.store.state.subscriptions.some(
         (s) =>
           s.userId === subscription.userId &&
-          s.planId === subscription.planId &&
+          s.creatorId === subscription.creatorId &&
           s.status === 'active',
       )
     ) {
-      throw new Error('unique constraint violated: subscriptions_one_active_per_plan_uq');
+      // Mirror the DB partial unique index (M7.3.1): one active per (user, creator).
+      // Carry SQLSTATE 23505 so services recognise it like a real unique_violation.
+      throw Object.assign(
+        new Error('unique constraint violated: subscriptions_one_active_per_creator_uq'),
+        { code: '23505' },
+      );
     }
     const now = this.store.clock.now();
     const row: Subscription = {
@@ -615,9 +620,7 @@ class MemorySubscriptionRepository implements SubscriptionRepository {
   async countActiveByCreator(creatorId: CreatorId, at: Date): Promise<number> {
     return this.store.state.subscriptions.filter(
       (s) =>
-        s.creatorId === creatorId &&
-        s.status === 'active' &&
-        s.expiresAt.getTime() > at.getTime(),
+        s.creatorId === creatorId && s.status === 'active' && s.expiresAt.getTime() > at.getTime(),
     ).length;
   }
 }
@@ -794,6 +797,13 @@ class MemoryAccessGrantRepository implements AccessGrantRepository {
       this.store.state.accessGrants.find(
         (g) => g.userId === userId && g.dropId === dropId && g.revokedAt === null,
       ) ?? null
+    );
+  }
+
+  async findLiveGrantsForDrops(userId: UserId, dropIds: DropId[]): Promise<AccessGrant[]> {
+    const ids = new Set<DropId>(dropIds);
+    return this.store.state.accessGrants.filter(
+      (g) => g.userId === userId && ids.has(g.dropId) && g.revokedAt === null,
     );
   }
 

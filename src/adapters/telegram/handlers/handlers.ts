@@ -158,12 +158,9 @@ export const registerTelegramHandlers = (
       return;
     }
     const drops = await deps.drops.listPublished(creatorId);
-    const entries = await Promise.all(
-      drops.map(async (drop) => ({
-        drop,
-        decision: await deps.access.resolveAccess(user.id, drop.id),
-      })),
-    );
+    // Batched: one transaction resolves the whole catalog (no per-drop N+1) — M7.3.1.
+    const decisions = await deps.access.resolveAccessForDrops(user.id, drops);
+    const entries = drops.map((drop, i) => ({ drop, decision: decisions[i]! }));
     const active = await deps.subscriptions.hasActiveSubscription(user.id, creatorId);
     await ctx.reply(myAccessView(entries, active), html);
   });

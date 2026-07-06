@@ -10,9 +10,14 @@
 import { randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { z } from 'zod';
+import type { CacheProvider } from '../../core/ports/cache-provider.port.js';
 import type { ContentProvider } from '../../core/ports/content-provider.port.js';
 import type { AnalyticsService } from '../../core/services/analytics.service.js';
-import type { AuthPrincipal, AuthService, RegisterInput } from '../../core/services/auth.service.js';
+import type {
+  AuthPrincipal,
+  AuthService,
+  RegisterInput,
+} from '../../core/services/auth.service.js';
 import type { CreatorService, ProfilePatchInput } from '../../core/services/creator.service.js';
 import type {
   DiscoveryService,
@@ -24,8 +29,27 @@ import type { SubscriptionService } from '../../core/services/subscription.servi
 import type { Logger } from '../../logging/logger.js';
 import { appError } from '../../shared/app-error.js';
 import { ACCESS_TYPES, CONTENT_TYPES, type ContentType } from '../../shared/domain.js';
-import type { HttpRequestHandler } from '../../server/http-server.js';
-import { bearerToken, readJsonBody, readRawBody, sendError, sendJson, sendResult } from './http.js';
+import {
+  bearerToken,
+  readJsonBody,
+  readRawBody,
+  sendError,
+  sendJson,
+  sendRateLimited,
+  sendResult,
+} from './http.js';
+import { checkRateLimit, clientIp, type ApiRateLimits, type RateLimitRule } from './rate-limit.js';
+
+/**
+ * The handler shape this adapter produces — a plain Node http handler. Defined here
+ * (the producer) rather than imported from the composition/server zone, so the api
+ * adapter never depends on server/ (dependency direction stays composition→adapter,
+ * ESLint-enforced). Structurally identical to server's MountedApp.handler.
+ */
+export type HttpRequestHandler = (
+  req: IncomingMessage,
+  res: ServerResponse,
+) => void | Promise<void>;
 
 export interface ApiDependencies {
   readonly auth: AuthService;
@@ -38,6 +62,11 @@ export interface ApiDependencies {
   readonly content: ContentProvider;
   /** Shared-bot @username for building storefront deep-links; null = omit the URL. */
   readonly botUsername: string | null;
+  /** CacheProvider-backed request throttling (shared with the Telegram limiter primitive). */
+  readonly cache: CacheProvider;
+  readonly rateLimits: ApiRateLimits;
+  /** Appending reverse proxies in front of the app (Railway edge = 1) — for client-IP resolution. */
+  readonly trustedProxyHops: number;
   readonly logger: Logger;
 }
 
@@ -77,6 +106,22 @@ const withDeepLink = (
     botUsername === null ? null : `https://t.me/${botUsername}?start=${profile.startParam}`,
 });
 
+/** Enforce a rate-limit bucket; if exhausted, send a 429 and return true (caller returns). */
+const limited = async (
+  deps: ApiDependencies,
+  res: ServerResponse,
+  key: string,
+  rule: RateLimitRule,
+): Promise<boolean> => {
+  const verdict = await checkRateLimit(deps.cache, key, rule);
+  if (verdict.degraded) {
+    deps.logger.warn({ key }, 'rate-limit cache unavailable — allowing (fail-open)');
+  }
+  if (verdict.allowed) return false;
+  sendRateLimited(res, verdict.retryAfterSeconds);
+  return true;
+};
+
 export const createApiHandler = (deps: ApiDependencies): HttpRequestHandler => {
   return async (req, res) => {
     try {
@@ -97,8 +142,15 @@ const route = async (
 ): Promise<void> => {
   const method = req.method ?? 'GET';
   const path = (req.url ?? '/').split('?')[0]?.replace(/\/+$/, '') || '/';
+  // Validated client IP (rightmost trusted-proxy hop), used for all IP-keyed buckets.
+  const ip = clientIp(req, deps.trustedProxyHops);
 
   // ---- public marketplace routes (no auth, read-only) ----
+  // Throttle the unauthenticated read surface per IP before any DB work (incl. the
+  // pg_trgm ILIKE search) so it can't be flooded to drive DB load.
+  if (path.startsWith('/api/public/')) {
+    if (await limited(deps, res, `rate:api:public:${ip}`, deps.rateLimits.public)) return;
+  }
   if (method === 'GET' && path === '/api/public/creators/featured') {
     return sendJson(res, 200, { creators: await deps.discovery.featured() });
   }
@@ -126,13 +178,29 @@ const route = async (
   }
 
   // ---- auth (public) ----
+  // Throttle by client IP BEFORE running scrypt so a flood can't exhaust the KDF
+  // threadpool (shared, single-replica) or brute-force credentials.
   if (method === 'POST' && path === '/api/auth/register') {
+    if (await limited(deps, res, `rate:api:auth:ip:${ip}`, deps.rateLimits.auth)) return;
     const body = (await readJsonBody(req)) as RegisterInput;
     return sendResult(res, await deps.auth.register(body), 201);
   }
   if (method === 'POST' && path === '/api/auth/login') {
+    if (await limited(deps, res, `rate:api:auth:ip:${ip}`, deps.rateLimits.auth)) return;
     const parsed = loginBody.safeParse(await readJsonBody(req));
-    if (!parsed.success) return sendError(res, appError('validation', 'Email and password are required.'));
+    if (!parsed.success)
+      return sendError(res, appError('validation', 'Email and password are required.'));
+    // Second bucket per email so credential-stuffing can't hide behind rotating IPs.
+    if (
+      await limited(
+        deps,
+        res,
+        `rate:api:auth:email:${parsed.data.email.toLowerCase()}`,
+        deps.rateLimits.auth,
+      )
+    ) {
+      return;
+    }
     return sendResult(res, await deps.auth.login(parsed.data));
   }
 
@@ -140,6 +208,16 @@ const route = async (
   const token = bearerToken(req);
   const principal = token === null ? null : await deps.auth.authenticate(token);
   if (principal === null) return sendError(res, appError('unauthorized', 'Sign in required.'));
+  // Per-creator throttle over the whole authenticated surface (incl. uploads).
+  if (
+    await limited(
+      deps,
+      res,
+      `rate:api:creator:${principal.creatorId}`,
+      deps.rateLimits.authenticated,
+    )
+  )
+    return;
 
   if (method === 'POST' && path === '/api/auth/logout') {
     if (token !== null) await deps.auth.logout(token);
@@ -164,7 +242,8 @@ const route = async (
   }
   if (method === 'POST' && path === '/api/content/drops') {
     const parsed = createDropBody.safeParse(await readJsonBody(req));
-    if (!parsed.success) return sendError(res, appError('validation', 'Please check the drop fields.'));
+    if (!parsed.success)
+      return sendError(res, appError('validation', 'Please check the drop fields.'));
     return sendResult(
       res,
       await deps.drops.createDrop({ creatorId: principal.creatorId, ...parsed.data }),
@@ -176,7 +255,8 @@ const route = async (
   }
   if (method === 'POST' && path === '/api/plans') {
     const parsed = createPlanBody.safeParse(await readJsonBody(req));
-    if (!parsed.success) return sendError(res, appError('validation', 'Please check the plan fields.'));
+    if (!parsed.success)
+      return sendError(res, appError('validation', 'Please check the plan fields.'));
     return sendResult(
       res,
       await deps.subscriptions.createPlan({ creatorId: principal.creatorId, ...parsed.data }),
@@ -216,7 +296,10 @@ const uploadAsset = async (
 
   const assetType = uploadableType.safeParse(header(req, 'x-asset-type'));
   if (!assetType.success) {
-    return sendError(res, appError('validation', 'x-asset-type must be photo, video, or document.'));
+    return sendError(
+      res,
+      appError('validation', 'x-asset-type must be photo, video, or document.'),
+    );
   }
   const mimeType = header(req, 'content-type') ?? 'application/octet-stream';
   const fileName = header(req, 'x-file-name') ?? `${randomUUID()}`;

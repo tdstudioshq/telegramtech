@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { InMemoryNotificationQueue } from '../../../../src/adapters/notifications/in-memory-notification-queue.js';
 import { NotificationEngine } from '../../../../src/core/engines/notification.engine.js';
 import { analyticsStub } from '../../../../src/core/events/handlers/analytics.handler.js';
 import {
@@ -34,7 +35,11 @@ const ids = {
 describe('notification handlers enqueue intents', () => {
   it('PaymentFailed → payment_failed intent for the payer', async () => {
     const world = createWorld();
-    const engine = new NotificationEngine(world.uow, new FakeNotifier());
+    const engine = new NotificationEngine(
+      world.uow,
+      new FakeNotifier(),
+      new InMemoryNotificationQueue(),
+    );
     const event: PaymentFailed = {
       type: 'PaymentFailed',
       paymentId: ids.payment,
@@ -48,12 +53,16 @@ describe('notification handlers enqueue intents', () => {
 
     await paymentFailedNotification(engine)(event);
 
-    expect(engine.pendingCount).toBe(1);
+    expect(await engine.size()).toBe(1);
   });
 
   it('SubscriptionActivated → welcome; SubscriptionExpired → renew prompt', async () => {
     const world = createWorld();
-    const engine = new NotificationEngine(world.uow, new FakeNotifier());
+    const engine = new NotificationEngine(
+      world.uow,
+      new FakeNotifier(),
+      new InMemoryNotificationQueue(),
+    );
     const activated: SubscriptionActivated = {
       type: 'SubscriptionActivated',
       subscriptionId: ids.subscription,
@@ -75,7 +84,7 @@ describe('notification handlers enqueue intents', () => {
     await subscriptionActivatedNotification(engine)(activated);
     await subscriptionExpiredNotification(engine)(expired);
 
-    expect(engine.pendingCount).toBe(2);
+    expect(await engine.size()).toBe(2);
   });
 });
 
