@@ -59,3 +59,17 @@ Railway → Deployments → pick the last-good deployment → **Redeploy**. Beca
 ## Graceful shutdown
 
 `SIGTERM`/`SIGINT` (Railway sends `SIGTERM` on redeploy) → stop the HTTP server (stop accepting updates) → best-effort `deleteWebhook` → drain in-flight jobs → close the pool → exit. A 10s watchdog force-exits if shutdown hangs. `uncaughtException`/`unhandledRejection` are logged `fatal` and trigger the same shutdown with exit code 1.
+
+## M7.4 — Redis + horizontal scaling (deploy procedure)
+
+Railway **auto-deploy is OFF** — pushing `main` does not deploy. Trigger a deploy of the latest `main` commit with `railway redeploy --from-source -y`.
+
+Ordered rollout (learned during the M7.4.1 production rollout; order matters):
+
+1. **Migrations first.** Apply `0005`/`0006` to the shared Supabase (`DATABASE_DIRECT_URL=<direct url> pnpm db:migrate`) **before** deploying the new code. `0005` is a constraint replacement — pre-check `SELECT user_id,creator_id,count(*) FROM subscriptions WHERE status='active' GROUP BY 1,2 HAVING count(*)>1` returns zero rows first.
+2. **Deploy the code on the DEFAULT (memory) cache.** Do NOT set `CACHE_PROVIDER=redis` yet — older builds throw on `redis` and would crash-loop on restart. Deploy, confirm `/health`→`0.2.x`.
+3. **Provision Redis:** `railway add --database redis` (creates a `Redis` service).
+4. **Engage Redis:** set on the app service `CACHE_PROVIDER=redis` and `REDIS_URL=${{Redis.REDIS_URL}}` (private internal URL). This redeploys; if the reference is wrong, env validation fails the *new* deploy and the current build keeps serving (safe). Confirm rate limiting still 429s (Redis counters live; a broken Redis fails **open**).
+5. **Scale:** set `railway.json` `numReplicas: 2`, push, `railway redeploy --from-source`. **Never raise `numReplicas` before Redis is engaged** (per-replica memory cache reintroduces N× rate limits, stranded notifications, duplicate locks).
+
+Multi-replica notes: every replica registers the same shared webhook on boot; `registerTelegramWebhook` retries on Telegram 429 and is non-fatal (the webhook is shared/persistent). Scheduled jobs run on every replica but are gated by the Redis distributed lock and are idempotent (status-guarded sweeps + atomic shared-queue drain), so there are no duplicate *effects*.
